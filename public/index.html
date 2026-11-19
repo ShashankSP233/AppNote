@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approval Note Generator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div id="login" class="login-screen">
+  <form class="login-card" id="login-form">
+    <h1>Approval Note Generator</h1>
+    <p class="muted">Dharti Dredging &amp; Infrastructure Limited</p>
+    <label>Username<input name="username" autocomplete="username" required autofocus></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit" class="btn primary wide">Sign in</button>
+    <p class="error" id="login-error" hidden></p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand" data-nav="list">
+      <span class="mark">AN</span>
+      <span>Approval Notes</span>
+    </div>
+    <nav class="topnav">
+      <button class="btn ghost" data-nav="list">All notes</button>
+      <button class="btn ghost" data-nav="inbox">My inbox <span class="pill" id="inbox-count" hidden>0</span></button>
+      <button class="btn ghost" data-nav="masters">Masters</button>
+    </nav>
+    <div class="who">
+      <span id="who-name"></span>
+      <span class="role" id="who-role"></span>
+      <button class="btn ghost small" id="change-password">
+        <span class="full-label">Change password</span><span class="short-label">Password</span>
+      </button>
+      <button class="btn ghost small" id="logout">Sign out</button>
+    </div>
+  </header>
+
+  <main id="view"></main>
+</div>
+
+<div class="toast-stack" id="toasts"></div>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <header><h2 id="modal-title"></h2><button class="btn ghost small" id="modal-close">✕</button></header>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>

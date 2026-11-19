@@ -1,0 +1,36 @@
+{
+  "name": "approval-note-generator",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Approval Note Generator for Dharti Dredging & Infrastructure Ltd — multi-quotation comparison, accounts tax verification and .docx generation with annexures",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:init": "node src/db-init.js",
+    "db:seed": "node src/db-init.js --demo",
+    "db:reset": "node src/db-init.js --reset --demo",
+    "db:check-sources": "node src/db-check-sources.js",
+    "db:setup-fdw": "node src/db-setup-fdw.js",
+    "test": "node --test \"test/*.test.js\"",
+    "check": "node --check src/server.js",
+    "sample": "node test/generate-sample.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "bcryptjs": "^2.4.3",
+    "docx": "^9.0.2",
+    "dotenv": "^16.4.5",
+    "express": "^5.0.1",
+    "express-session": "^1.18.1",
+    "multer": "^2.0.0",
+    "pdfjs-dist": "^4.8.69",
+    "pg": "^8.13.1"
+  },
+  "optionalDependencies": {
+    "tesseract.js": "^6.0.0"
+  }
+}
