@@ -4,7 +4,7 @@
 // comparative statement is Annexure B.
 
 import {
-  para, text, heading, spacer, bullet, cell, headCell, moneyCell, table, row,
+  para, text, spacer, bullet, cell, headCell, moneyCell, table, row,
   labelledBox, calloutBox, themed, ALIGN, BOX, GRID, NO_BORDER, COLOURS,
 } from './helpers.js';
 import { money, qty, amountInWords, formatDate, num } from '../domain.js';
@@ -17,26 +17,33 @@ function titleBlock(note) {
   // Date left, serial right, on one line.
   children.push(table([
     row([
-      cell(`Date: ${formatDate(note.note_date)}`, { width: 50, size: 10, borders: NO_BORDER }),
-      cell(`Sr. No.: ${note.note_no || '________'}`, {
-        width: 50, size: 10, align: ALIGN.RIGHT, borders: NO_BORDER,
+      cell([para([text('Date: ', { size: 10, bold: true }), text(formatDate(note.note_date), { size: 10 })], { after: 0 })], {
+        width: 50, borders: NO_BORDER,
       }),
+      cell([para([text('Sr. No.: ', { size: 10, bold: true }), text(note.note_no || '________', { size: 10 })], {
+        align: ALIGN.RIGHT, after: 0,
+      })], { width: 50, borders: NO_BORDER }),
     ]),
   ], { borders: NO_BORDER }));
 
-  children.push(para(`Status – ${note.status_label || 'Live'}`, { size: 9.5, align: ALIGN.RIGHT, after: 4 }));
+  children.push(para(`Status – ${note.status_label || 'Live'}`, { size: 9.5, bold: true, align: ALIGN.RIGHT, after: 5 }));
 
-  children.push(para('APPROVAL NOTE', {
-    align: ALIGN.CENTER, bold: true, size: 15, before: 4, after: 8,
-  }));
+  children.push(table([row([cell('APPROVAL NOTE', {
+    width: 100, align: ALIGN.CENTER, bold: true, size: 13, color: COLOURS.ACCENT, borders: BOX,
+  })])], { borders: BOX }));
+  children.push(spacer(4));
 
-  children.push(para('To: Hon. Chairman Sir, Managing Director Sir', { size: 10, after: 6 }));
+  const field = (label, value) => {
+    children.push(labelledBox(label, value));
+    children.push(spacer(3));
+  };
 
-  children.push(labelledBox('Subject', note.subject));
-  children.push(labelledBox('From',
-    `${note.prepared_by_name || note.preparer_name || ''}${note.prepared_by_desig || note.preparer_designation ? ` (${note.prepared_by_desig || note.preparer_designation})` : ''}`));
-  children.push(labelledBox('Project Name', note.project_name || ''));
-  children.push(labelledBox('Item Description', note.item_description || ''));
+  const preparer = `${note.prepared_by_name || note.preparer_name || ''}${note.prepared_by_desig || note.preparer_designation ? ` (${note.prepared_by_desig || note.preparer_designation})` : ''}`;
+  field('To', 'Hon. Chairman Sir, Managing Director Sir');
+  field('From', preparer);
+  field('Subject', note.subject);
+  field('Project Name', note.project_name);
+  field('Item Description', note.item_description);
 
   return children;
 }
@@ -59,27 +66,56 @@ function comparisonSummaryBlock(note) {
     return children;
   }
 
-  const rows = [
-    row([
+  let rows;
+  if (summary.rows.length <= 3) {
+    // The office note compares vendors in columns. Keep that familiar form
+    // for up to three offers; wider tenders use a row-based table below.
+    const vendorWidth = 76 / summary.rows.length;
+    rows = [row([
+      headCell('Particulars', { width: 24, align: ALIGN.LEFT }),
+      ...summary.rows.map((entry, index) => headCell(
+        `Vendor ${index + 1}: ${entry.vendor_name}${entry.is_selected ? ' (Selected)' : ''}`,
+        { width: vendorWidth, size: 8.5, align: ALIGN.LEFT },
+      )),
+    ], { header: true })];
+
+    const comparisonLine = (label, valueFor, options = {}) => row([
+      headCell(label, { width: 24, align: ALIGN.LEFT, size: 9 }),
+      ...summary.rows.map((entry) => cell(valueFor(entry), {
+        width: vendorWidth,
+        align: options.align || ALIGN.LEFT,
+        size: options.size || 9,
+        bold: entry.is_selected,
+      })),
+    ]);
+    rows.push(comparisonLine('Landed value (₹)', (entry) => (
+      entry.landed === null ? '—' : money(entry.landed)
+    ), { align: ALIGN.RIGHT }));
+    rows.push(comparisonLine('Price rank', (entry) => (entry.price_rank ? `L${entry.price_rank}` : '—'), { align: ALIGN.CENTER }));
+    rows.push(comparisonLine('Delivery', (entry) => entry.delivery));
+    rows.push(comparisonLine('Payment terms', (entry) => entry.payment));
+    rows.push(comparisonLine('Overall rank', (entry) => (entry.overall_rank ? `#${entry.overall_rank}` : '—'), { align: ALIGN.CENTER }));
+  } else {
+    rows = [row([
       headCell('Vendor', { width: 28, align: ALIGN.LEFT }),
       headCell('Landed value (₹)', { width: 16 }),
       headCell('Price rank', { width: 10 }),
       headCell('Delivery', { width: 17 }),
       headCell('Payment terms', { width: 20 }),
       headCell('Overall', { width: 9 }),
-    ], { header: true }),
-  ];
+    ], { header: true })];
 
-  for (const entry of summary.rows) {
-    const selectedMark = entry.is_selected ? ' ✓' : '';
-    rows.push(row([
-      cell(`${entry.vendor_name}${selectedMark}`, { align: ALIGN.LEFT, bold: entry.is_selected }),
-      cell(entry.landed === null ? '—' : money(entry.landed), { align: ALIGN.RIGHT, bold: entry.is_selected }),
-      cell(entry.price_rank ? `L${entry.price_rank}` : '—', { align: ALIGN.CENTER }),
-      cell(entry.delivery, { align: ALIGN.LEFT, size: 9 }),
-      cell(entry.payment, { align: ALIGN.LEFT, size: 9 }),
-      cell(entry.overall_rank ? `#${entry.overall_rank}` : '—', { align: ALIGN.CENTER }),
-    ]));
+    for (const entry of summary.rows) {
+      const selectedMark = entry.is_selected ? ' ✓' : '';
+      rows.push(row([
+        cell(`${entry.vendor_name}${selectedMark}`, { align: ALIGN.LEFT, bold: entry.is_selected }),
+        cell(entry.landed === null ? '—' : money(entry.landed), { align: ALIGN.RIGHT, bold: entry.is_selected }),
+        cell(entry.price_rank ? `L${entry.price_rank}` : '—', { align: ALIGN.CENTER }),
+        cell(entry.delivery, { align: ALIGN.LEFT, size: 9 }),
+        cell(entry.payment, { align: ALIGN.LEFT, size: 9 }),
+        cell(entry.overall_rank ? `#${entry.overall_rank}` : '—', { align: ALIGN.CENTER }),
+      ]));
+    }
   }
 
   children.push(table(rows, { borders: GRID }));

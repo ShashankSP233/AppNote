@@ -4,7 +4,8 @@
 // landscape, because a wide table of vendors will not fit otherwise. docx
 // handles this with separate sections.
 
-import { Document, Packer, PageOrientation, Header, Footer, AlignmentType, PageNumber, TextRun } from 'docx';
+import fs from 'node:fs';
+import { Document, Packer, PageOrientation, Header, Footer, AlignmentType, PageNumber, TextRun, ImageRun } from 'docx';
 import { buildFrontPage, buildPostDeliveryPage } from './approval-note.js';
 import { requisitionAnnexure, comparisonAnnexure, scheduleAnnexure, quotationAnnexure } from './annexures.js';
 import { DOC_STYLES, PAGE_MARGINS, LANDSCAPE_MARGINS, para, text, FONT, pt, COLOURS } from './helpers.js';
@@ -49,13 +50,20 @@ export function buildAnnexures(note) {
   }));
 }
 
-function headerFor(note) {
+function headerFor(note, { includeLogo = false } = {}) {
+  const logoPath = new URL('../../public/logo.png', import.meta.url);
+  const logo = includeLogo && fs.existsSync(logoPath)
+    ? new ImageRun({
+      data: fs.readFileSync(logoPath),
+      transformation: { width: 142, height: 100 },
+    })
+    : null;
+
   return new Header({
     children: [
-      para([
-        text(COMPANY, { size: 8, color: COLOURS.MUTED, bold: true }),
-        text(`  ·  Approval Note ${note.note_no || ''}`, { size: 8, color: COLOURS.MUTED }),
-      ], { align: AlignmentType.RIGHT, after: 0, bottomRule: true }),
+      logo
+        ? para([logo], { align: AlignmentType.RIGHT, after: 0 })
+        : para(`Approval Note ${note.note_no || ''}`, { size: 8, color: COLOURS.MUTED, align: AlignmentType.RIGHT, after: 0 }),
     ],
   });
 }
@@ -77,13 +85,15 @@ export async function generateApprovalNote(note) {
   const footer = footerFor(note);
 
   const sections = [];
+  const frontHeader = headerFor(note, { includeLogo: true });
+  const annexureHeader = headerFor(note);
 
   // --- Front page (portrait) ----------------------------------------------
   sections.push({
     properties: {
-      page: { margin: PAGE_MARGINS, size: { orientation: PageOrientation.PORTRAIT } },
+      page: { margin: { ...PAGE_MARGINS, top: 1200 }, size: { orientation: PageOrientation.PORTRAIT } },
     },
-    headers: { default: header },
+    headers: { default: frontHeader },
     footers: { default: footer },
     children: buildFrontPage(note, { annexureIndex: annexures }),
   });
@@ -95,7 +105,7 @@ export async function generateApprovalNote(note) {
       properties: {
         page: { margin: PAGE_MARGINS, size: { orientation: PageOrientation.PORTRAIT } },
       },
-      headers: { default: header },
+      headers: { default: annexureHeader },
       footers: { default: footer },
       children: requisitionAnnexure(note, requisition.letter),
     });
@@ -108,7 +118,7 @@ export async function generateApprovalNote(note) {
       properties: {
         page: { margin: LANDSCAPE_MARGINS, size: { orientation: PageOrientation.LANDSCAPE } },
       },
-      headers: { default: header },
+      headers: { default: annexureHeader },
       footers: { default: footer },
       children: comparisonAnnexure(note, comparison.letter),
     });
@@ -131,7 +141,7 @@ export async function generateApprovalNote(note) {
       properties: {
         page: { margin: PAGE_MARGINS, size: { orientation: PageOrientation.PORTRAIT } },
       },
-      headers: { default: header },
+      headers: { default: annexureHeader },
       footers: { default: footer },
       children,
     });
@@ -144,7 +154,7 @@ export async function generateApprovalNote(note) {
     properties: {
       page: { margin: PAGE_MARGINS, size: { orientation: PageOrientation.PORTRAIT } },
     },
-    headers: { default: header },
+    headers: { default: annexureHeader },
     footers: { default: footer },
     children: buildPostDeliveryPage(note),
   });

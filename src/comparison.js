@@ -34,13 +34,13 @@ export function quotationCost(quotation, { interState = false, includeOptional =
     && (num(item.amount, 0) !== 0 || num(item.rate, 0) !== 0));
   const hasQuotedBasic = quotation.quoted_basic !== null && quotation.quoted_basic !== undefined && quotation.quoted_basic !== '';
   const hasQuotedTotal = quotation.quoted_total !== null && quotation.quoted_total !== undefined && quotation.quoted_total !== '';
-  const lineGstRates = [...new Set(items.filter((item) => !item.not_quoted && item.gst_rate !== null
-    && item.gst_rate !== undefined && item.gst_rate !== '').map((item) => num(item.gst_rate)))];
   const headerGstRate = quotation.gst_rate !== null && quotation.gst_rate !== undefined && quotation.gst_rate !== ''
     ? num(quotation.gst_rate) : null;
   let itemsTotal = 0;
   let optionalTotal = 0;
   let notQuoted = 0;
+  let gstRateAssumed = false;
+  const itemTaxGroups = new Map();
 
   for (const item of items) {
     if (item.not_quoted) { notQuoted += 1; continue; }
@@ -52,6 +52,15 @@ export function quotationCost(quotation, { interState = false, includeOptional =
       if (!includeOptional) continue;
     }
     itemsTotal = round2(itemsTotal + amount);
+
+    if (amount !== 0 && (num(item.amount, 0) !== 0 || num(item.rate, 0) !== 0)) {
+      const hasItemRate = item.gst_rate !== null && item.gst_rate !== undefined && item.gst_rate !== '';
+      const rate = hasItemRate ? num(item.gst_rate) : (headerGstRate ?? 18);
+      if (!hasItemRate && headerGstRate === null) gstRateAssumed = true;
+      const group = itemTaxGroups.get(rate) || { rate, amount: 0 };
+      group.amount = round2(group.amount + amount);
+      itemTaxGroups.set(rate, group);
+    }
   }
 
   // Fall back to printed figures when line pricing was not captured.
@@ -65,9 +74,42 @@ export function quotationCost(quotation, { interState = false, includeOptional =
 
   const hasLineBreakdown = hasPricedLines || hasQuotedBasic;
   const taxable = hasLineBreakdown ? round2(itemsTotal - discount + freight + other) : null;
-  const gstRateAssumed = headerGstRate === null && lineGstRates.length !== 1;
-  const gstRate = headerGstRate ?? (lineGstRates.length === 1 ? lineGstRates[0] : 18);
-  const gst = hasLineBreakdown ? gstSplit(taxable, gstRate, { interState }) : null;
+  let gstAmount = null;
+  let gstRate = headerGstRate;
+  let gstRateLabel = headerGstRate === null ? null : `${headerGstRate}%`;
+  let mixedItemGstRates = false;
+
+  if (hasLineBreakdown) {
+    const groups = [...itemTaxGroups.values()].sort((a, b) => a.rate - b.rate);
+    const groupBase = round2(groups.reduce((sum, group) => sum + group.amount, 0));
+    if (hasPricedLines && groups.length && Math.abs(groupBase) >= 0.005) {
+      const adjustments = round2(-discount + freight + other);
+      let allocated = 0;
+      gstAmount = 0;
+      for (const [index, group] of groups.entries()) {
+        const adjustmentShare = index === groups.length - 1
+          ? round2(adjustments - allocated)
+          : round2(adjustments * group.amount / groupBase);
+        allocated = round2(allocated + adjustmentShare);
+        const groupTaxable = round2(group.amount + adjustmentShare);
+        gstAmount = round2(gstAmount + gstSplit(groupTaxable, group.rate, { interState }).total);
+      }
+      const rates = groups.map((group) => group.rate);
+      mixedItemGstRates = rates.length > 1;
+      gstRate = mixedItemGstRates ? null : rates[0];
+      gstRateLabel = rates.map((rate) => `${rate}%`).join(' / ');
+      if (gstRateAssumed) gstRateLabel += ' (18% assumed for lines without a rate)';
+    } else {
+      const lineRates = [...itemTaxGroups.keys()].sort((a, b) => a - b);
+      mixedItemGstRates = lineRates.length > 1;
+      gstRate = headerGstRate ?? (lineRates.length === 1 ? lineRates[0] : 18);
+      gstRateAssumed = headerGstRate === null && lineRates.length !== 1;
+      gstRateLabel = mixedItemGstRates
+        ? `${lineRates.map((rate) => `${rate}%`).join(' / ')} (line values unavailable; ${gstRate}% applied)`
+        : `${gstRate}%${gstRateAssumed ? ' assumed' : ''}`;
+      gstAmount = gstSplit(taxable, gstRate, { interState }).total;
+    }
+  }
   const quotedTotal = hasQuotedTotal ? round2(quotation.quoted_total) : null;
   // A total that includes only optional lines cannot stand in for the
   // comparable required scope. Ask for a required-line value or quoted basic.
@@ -84,10 +126,11 @@ export function quotationCost(quotation, { interState = false, includeOptional =
     basic: hasLineBreakdown ? taxable : null,
     gstRate,
     gstRateAssumed,
-    mixedItemGstRates: lineGstRates.length > 1,
-    gstAmount: gst?.total ?? null,
-    landed: useQuotedTotal ? quotedTotal : (hasLineBreakdown ? round2(taxable + gst.total) : 0),
-    calculatedLanded: hasLineBreakdown ? round2(taxable + gst.total) : null,
+    gstRateLabel,
+    mixedItemGstRates,
+    gstAmount,
+    landed: useQuotedTotal ? quotedTotal : (hasLineBreakdown ? round2(taxable + gstAmount) : 0),
+    calculatedLanded: hasLineBreakdown ? round2(taxable + gstAmount) : null,
     lineCount: items.length,
     hasComparableValue: !invalidPrice && (hasPricedLines || hasQuotedBasic || (quotedTotal !== null && !hasOptionalOnlyPricing)),
     hasOptionalOnlyPricing,
@@ -261,9 +304,19 @@ export function buildComparison({
   }
 
   // --- Technical scores from the criteria grid -----------------------------
+  const positiveCriteria = criteria
+    .map((criterion) => ({ criterion, weight: Math.max(0, num(criterion.weight, 1)) }))
+    .filter((entry) => entry.weight > 0);
+  const hasAnyTechnicalScore = rows.some((row) => positiveCriteria.some(({ criterion }) => {
+    const score = criterion.values?.[row.quotation_id]?.score;
+    return score !== null && score !== undefined && score !== '' && Number.isFinite(num(score, NaN));
+  }));
+
   const technicalScores = rows.map((row) => {
     let weighted = 0;
     let weightSum = 0;
+    let scoredCriteria = 0;
+    let missingCriteria = 0;
     let mandatoryFailures = 0;
 
     for (const criterion of criteria) {
@@ -271,16 +324,29 @@ export function buildComparison({
       const cw = Math.max(0, num(criterion.weight, 1));
       if (criterion.is_mandatory && (!value || value.complies !== true)) mandatoryFailures += 1;
       if (cw === 0) continue;
-      if (!value || value.score === null || value.score === undefined || value.score === '') continue;
-      weighted += num(value.score) * cw;
       weightSum += cw;
+      const score = value?.score;
+      if (score === null || score === undefined || score === '' || !Number.isFinite(num(score, NaN))) {
+        missingCriteria += 1;
+        continue;
+      }
+      weighted += num(score) * cw;
+      scoredCriteria += 1;
     }
     return {
-      score: weightSum > 0 ? round2(weighted / weightSum) : null,
+      score: weightSum > 0 && hasAnyTechnicalScore ? round2(weighted / weightSum) : null,
       mandatoryFailures,
-      scored: weightSum > 0,
+      scored: scoredCriteria > 0,
+      missingCriteria,
     };
   });
+
+  /*
+   * A shared denominator keeps the technical score comparable across offers.
+   * Missing scores count as zero once the technical axis is being used at all;
+   * when nobody has entered any scores, the axis is omitted from the overall
+   * ranking instead of reducing every offer's score by an empty category.
+   */
 
   // --- Per-axis normalisation ---------------------------------------------
   const priceScores = normaliseLowerIsBetter(rows.map((r) => (r.cost.hasComparableValue ? r.cost.landed : NaN)));
@@ -300,6 +366,7 @@ export function buildComparison({
     row.payment_score = paymentScores[i];
     row.technical_score = technicalScores[i].score;
     row.technical_scored = technicalScores[i].scored;
+    row.technical_missing_criteria = technicalScores[i].missingCriteria;
     row.mandatory_failures = technicalScores[i].mandatoryFailures;
 
     // Keep a common denominator for every vendor. An applicable axis with
@@ -309,7 +376,7 @@ export function buildComparison({
       { key: 'price', score: row.price_score, weight: normWeights.price, active: rows.some((r) => r.price_score !== null) },
       { key: 'delivery', score: row.delivery_score, weight: normWeights.delivery, active: rows.some((r) => r.delivery_score !== null) },
       { key: 'payment', score: row.payment_score, weight: normWeights.payment, active: rows.some((r) => r.payment_score !== null) },
-      { key: 'technical', score: row.technical_score, weight: normWeights.technical, active: criteria.some((c) => Math.max(0, num(c.weight, 1)) > 0) },
+      { key: 'technical', score: row.technical_score, weight: normWeights.technical, active: hasAnyTechnicalScore },
     ].filter((p) => p.active && p.weight > 0);
 
     const availableWeight = parts.reduce((s, p) => s + p.weight, 0);
@@ -321,6 +388,9 @@ export function buildComparison({
       : null;
     row.scored_axes = parts.filter((p) => Number.isFinite(p.score)).map((p) => p.key);
     row.incomplete_axes = parts.filter((p) => !Number.isFinite(p.score)).map((p) => p.key);
+    if (hasAnyTechnicalScore && technicalScores[i].missingCriteria > 0 && !row.incomplete_axes.includes('technical')) {
+      row.incomplete_axes.push('technical');
+    }
   });
 
   const overallRanks = rankAscending(rows, (r) => (
@@ -413,7 +483,7 @@ export function buildComparison({
   if (mixedGst.length) {
     flags.push({
       level: 'advisory',
-      message: `Multiple item GST rates were captured for ${mixedGst.map((r) => r.vendor_name).join(', ')}. The comparison currently applies one rate across the taxable amount; check those offers manually.`,
+      message: `Multiple item GST rates were captured for ${mixedGst.map((r) => `${r.vendor_name}${r.cost.gstRateAssumed ? ' (18% assumed for lines without a rate)' : ''}`).join(', ')}. The comparison applies rates by item and allocates discount, freight and other charges across rate groups in proportion to item value. Check the result against the printed quotation total.`,
     });
   }
 

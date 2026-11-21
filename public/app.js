@@ -1320,7 +1320,7 @@ function compareTab(note) {
       <span class="muted">Price ${note.comparison.weights.price}% · delivery ${note.comparison.weights.delivery}% · payment ${note.comparison.weights.payment}% · criteria ${note.comparison.weights.technical}%</span>
     </header>
     <div class="card-body compare-wrap">
-      <p class="muted">Scores use relative 0–10 scales; higher is better. Missing information scores 0 on an applicable axis. Criteria are combined using their individual weights; categories label the subject only. An axis with no data for any offer is omitted and the remaining weights are scaled proportionally. Vendors with mandatory failures are not ranked.</p>
+      <p class="muted">Scores use relative 0–10 scales; higher is better. Missing information scores 0 on an applicable axis. Criteria use the same total weight for every offer; once anyone scores a criterion, a blank score counts as 0. If nobody scores any criteria, that axis is omitted. Other axes with no data for any offer are also omitted and the remaining weights are scaled proportionally. Vendors with mandatory failures are not ranked.</p>
       <table class="compare">
         <thead><tr><th>Particulars</th>${cols}</tr></thead>
         <tbody>
@@ -1329,7 +1329,7 @@ function compareTab(note) {
           ${line('Less discount', (r) => (r.cost.hasBreakdown && r.cost.discount ? money(r.cost.discount) : '—'))}
           ${line('Add freight', (r) => (r.cost.hasBreakdown && r.cost.freight ? money(r.cost.freight) : '—'))}
           ${line('Taxable value', (r) => (r.cost.basic !== null ? `<b>${money(r.cost.basic)}</b>` : '—'))}
-          ${line('GST', (r) => (r.cost.gstAmount !== null ? `${money(r.cost.gstAmount)} <span class="muted">@${r.cost.gstRate}%${r.cost.gstRateAssumed ? ' assumed' : ''}</span>` : '—'))}
+          ${line('GST', (r) => (r.cost.gstAmount !== null ? `${money(r.cost.gstAmount)} <span class="muted">@${esc(r.cost.gstRateLabel || `${r.cost.gstRate}%`)}</span>` : '—'))}
           ${rows.some((r) => r.quoted_total !== null) ? line('Total as quoted', (r) => (r.quoted_total !== null ? money(r.quoted_total) : '—')) : ''}
           ${line('Landed cost', (r) => (r.cost.hasComparableValue ? `<b>${money(r.cost.landed)}</b>` : '—'), { bestOf: (r) => r.price_rank === 1 })}
           ${line('Price position', (r) => (r.price_rank ? `<span class="badge ${r.price_rank === 1 ? 'l1' : 'draft'}">L${r.price_rank}</span>` : '—'))}
@@ -2084,10 +2084,16 @@ WIRE.workflow = (note) => {
       <p class="muted">Leave a stage unassigned and anyone holding that role can act on it.</p>
       <form id="submit-form">
         ${['check', 'verify', 'accounts', 'approve'].map((stage) => `
-          <div class="field"><span>${esc(STAGE_LABEL[stage])}</span>
-            <select name="${stage}" multiple size="3">
-              ${byRole(STAGE_ROLE[stage]).map((u) => `<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}
-            </select></div>`).join('')}
+          <fieldset class="field assignment-field">
+            <legend>${esc(STAGE_LABEL[stage])}</legend>
+            <div class="assignment-options">
+              ${byRole(STAGE_ROLE[stage]).map((u) => `
+                <label class="assignment-option">
+                  <input type="checkbox" name="${stage}" value="${u.id}">
+                  <span>${esc(u.full_name)}</span>
+                </label>`).join('') || '<p class="muted">No active users for this stage.</p>'}
+            </div>
+          </fieldset>`).join('')}
         <button class="btn primary wide" type="submit">Submit</button>
       </form>`);
 
@@ -2095,7 +2101,8 @@ WIRE.workflow = (note) => {
       event.preventDefault();
       const assignments = {};
       for (const stage of ['check', 'verify', 'accounts', 'approve']) {
-        const selected = [...event.target[stage].selectedOptions].map((o) => Number(o.value));
+        const selected = [...event.target.querySelectorAll(`input[name="${stage}"]:checked`)]
+          .map((input) => Number(input.value));
         if (selected.length) assignments[stage] = selected;
       }
       try {

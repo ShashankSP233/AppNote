@@ -187,7 +187,7 @@ export function comparisonAnnexure(note, letter) {
   body.push(dataRow('Add other charges (₹)', (r) => (r.cost.other ? money(r.cost.other) : '—'), { align: ALIGN.RIGHT }));
   body.push(dataRow('Taxable value (₹)', (r) => (r.cost.basic !== null ? money(r.cost.basic) : '—'), { align: ALIGN.RIGHT, bold: true }));
   body.push(dataRow('GST rate', (r) => (r.cost.gstAmount !== null
-    ? `${num(r.cost.gstRate)}%${r.cost.gstRateAssumed ? ' (assumed)' : ''}` : '—')));
+    ? (r.cost.gstRateLabel || `${num(r.cost.gstRate)}%${r.cost.gstRateAssumed ? ' (assumed)' : ''}`) : '—')));
   body.push(dataRow('GST (₹)', (r) => (r.cost.gstAmount !== null ? money(r.cost.gstAmount) : '—'), { align: ALIGN.RIGHT }));
   if (rows.some((r) => r.quoted_total !== null)) {
     body.push(dataRow('Total as quoted (₹)', (r) => (r.quoted_total !== null ? money(r.quoted_total) : '—'), { align: ALIGN.RIGHT }));
@@ -286,7 +286,7 @@ export function comparisonAnnexure(note, letter) {
   }));
 
   children.push(table(body, { borders: GRID }));
-  children.push(para('Scores use relative 0–10 scales; higher is better. Missing information scores zero on an applicable axis. Criterion weights combine manual scores; category labels are for reference. An axis with no data for any offer is omitted, and the remaining axis weights are scaled proportionally. Vendors that fail or have not demonstrated a mandatory criterion are not ranked.', {
+  children.push(para('Scores use relative 0–10 scales; higher is better. Missing information scores zero on an applicable axis. Criteria use the same total weight for every offer; once any score is entered, a blank criterion score counts as zero. If no criteria are scored for any offer, that axis is omitted. Other axes with no data for any offer are omitted, and the remaining axis weights are scaled proportionally. Vendors that fail or have not demonstrated a mandatory criterion are not ranked.', {
     size: 8, italic: true, color: COLOURS.MUTED, before: 4, after: 2,
   }));
 
