@@ -439,11 +439,9 @@ export function assessAccountsReadiness(note) {
   return { canApprove: blocking.length === 0, blocking };
 }
 
-/**
- * Allocates the next note number for the financial year.
- * House format: YG/ Port-Dharti/26-27/July/<seq>
- */
-export async function allocateNoteNumber(noteId, date = new Date()) {
+/** Stores the preparer-supplied note number, or generates a fallback for API callers. */
+export async function allocateNoteNumber(noteId, date = new Date(), requestedNoteNo = null) {
+  const customNoteNo = String(requestedNoteNo || '').trim();
   const prefix = process.env.NOTE_PREFIX || 'YG/ Port-Dharti';
   const fy = financialYear(date);
   const month = monthName(date);
@@ -456,8 +454,7 @@ export async function allocateNoteNumber(noteId, date = new Date()) {
       [fy],
     );
     const seq = row?.next || 1;
-    const noteNo = `${prefix}/${fy}/${month}/${seq}`;
-
+    const noteNo = customNoteNo || `${prefix}/${fy}/${month}/${seq}`;
     await query(
       `UPDATE approval_notes
           SET note_no = $1, note_seq = $2, financial_year = $3, updated_at = now()

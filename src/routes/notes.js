@@ -38,6 +38,24 @@ function assertEditable(note, user) {
   }
 }
 
+function normalizeNoteNumber(value) {
+  if (typeof value !== 'string') throw httpError(400, 'Enter the approval note number.');
+  const noteNo = value.trim();
+  if (!noteNo) throw httpError(400, 'Enter the approval note number.');
+  if (noteNo.length > 160 || /[\u0000-\u001f\u007f]/.test(noteNo)) {
+    throw httpError(400, 'The approval note number must be a single line of 160 characters or fewer.');
+  }
+  return noteNo;
+}
+
+async function ensureNoteNumberAvailable(noteNo, exceptId = null) {
+  const existing = await one(
+    `SELECT id FROM approval_notes WHERE note_no = $1 AND ($2::integer IS NULL OR id <> $2) LIMIT 1`,
+    [noteNo, exceptId],
+  );
+  if (existing) throw httpError(409, `The approval note number “${noteNo}” is already in use.`);
+}
+
 /** Best-effort ERP vendor registration, called only after a user selects it. */
 async function addSelectedVendorToSiteErp(quotation) {
   const name = String(quotation.vendor_name || '').trim();
@@ -124,6 +142,9 @@ router.get('/:id', wrap(async (req, res) => {
 router.post('/', wrap(async (req, res) => {
   const b = req.body || {};
   if (!b.subject?.trim()) throw httpError(400, 'The note needs a subject.');
+  const requestedNoteNo = b.note_no === undefined || b.note_no === ''
+    ? null
+    : normalizeNoteNumber(b.note_no);
 
   if (!b.source_requisition_id) {
     throw httpError(400, 'Choose a requisition from Reqflow before creating the approval note.');
@@ -154,32 +175,43 @@ router.post('/', wrap(async (req, res) => {
     })),
   };
 
-  const note = await tx(async () => {
-    const created = await one(
-      `INSERT INTO approval_notes
-         (subject, item_description, project_id, requisition_id, requisition_source, requisition_source_id,
-          source_requisition_snapshot,
-          prepared_by, prepared_by_name, prepared_by_desig, note_date, mode_of_payment, payment_terms,
-          transport_charges, delivery_terms, place_of_supply, supply_state_code, status_label)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11, CURRENT_DATE),$12,$13,$14,$15,$16,$17,$18)
-       RETURNING *`,
-      [b.subject.trim(), b.item_description || null, null, null,
-        'reqflow', requisitionSourceId, requisitionSnapshot, req.user.id, req.user.full_name,
-        req.user.designation || null, b.note_date || null,
-        b.mode_of_payment || 'NEFT/RTGS', b.payment_terms || null, b.transport_charges || null,
-        b.delivery_terms || null, b.place_of_supply || null, b.supply_state_code || null,
-        b.status_label || 'Live'],
-    );
-    for (const [index, item] of sourceItems.entries()) await query(
-      `INSERT INTO note_items (note_id, source_requisition_item_id, line_no, description,
-                               specification, quantity, unit, rate)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,0)`,
-      [created.id, item.source_item_id, index + 1, item.item_name, item.reference_no,
-        item.quantity, item.unit || 'Nos'],
-    );
-    await allocateNoteNumber(created.id, created.note_date ? new Date(created.note_date) : new Date());
-    return created;
-  });
+  let note;
+  try {
+    note = await tx(async () => {
+      if (requestedNoteNo) await ensureNoteNumberAvailable(requestedNoteNo);
+      const created = await one(
+        `INSERT INTO approval_notes
+           (subject, item_description, project_id, requisition_id, requisition_source, requisition_source_id,
+            source_requisition_snapshot,
+            prepared_by, prepared_by_name, prepared_by_desig, note_date, mode_of_payment, payment_terms,
+            transport_charges, delivery_terms, place_of_supply, supply_state_code, status_label)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($11, CURRENT_DATE),$12,$13,$14,$15,$16,$17,$18)
+         RETURNING *`,
+        [b.subject.trim(), b.item_description || null, null, null,
+          'reqflow', requisitionSourceId, requisitionSnapshot, req.user.id, req.user.full_name,
+          req.user.designation || null, b.note_date || null,
+          b.mode_of_payment || 'NEFT/RTGS', b.payment_terms || null, b.transport_charges || null,
+          b.delivery_terms || null, b.place_of_supply || null, b.supply_state_code || null,
+          b.status_label || 'Live'],
+      );
+      for (const [index, item] of sourceItems.entries()) await query(
+        `INSERT INTO note_items (note_id, source_requisition_item_id, line_no, description,
+                                 specification, quantity, unit, rate)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,0)`,
+        [created.id, item.source_item_id, index + 1, item.item_name, item.reference_no,
+          item.quantity, item.unit || 'Nos'],
+      );
+      await allocateNoteNumber(created.id, created.note_date ? new Date(created.note_date) : new Date(), requestedNoteNo);
+      return created;
+    });
+  } catch (error) {
+    if (error.code === '23505' && error.constraint === 'approval_notes_note_no_key') {
+      throw httpError(409, requestedNoteNo
+        ? `The approval note number “${requestedNoteNo}” is already in use.`
+        : 'The generated approval note number is already in use. Please try again.');
+    }
+    throw error;
+  }
 
   await audit(req, { noteId: note.id, action: 'note_created', entity: 'note', entityId: note.id });
   res.status(201).json({ note: await loadNote(note.id) });
@@ -203,10 +235,23 @@ router.patch('/:id', wrap(async (req, res) => {
     if (b[key] !== undefined) set(key, b[key] === '' ? null : b[key]);
   }
 
+  if (b.note_no !== undefined) {
+    const noteNo = normalizeNoteNumber(b.note_no);
+    await ensureNoteNumberAvailable(noteNo, id);
+    set('note_no', noteNo);
+  }
+
   if (!fields.length) throw httpError(400, 'There is nothing to change.');
 
   values.push(id);
-  await query(`UPDATE approval_notes SET ${fields.join(', ')}, updated_at = now() WHERE id = $${values.length}`, values);
+  try {
+    await query(`UPDATE approval_notes SET ${fields.join(', ')}, updated_at = now() WHERE id = $${values.length}`, values);
+  } catch (error) {
+    if (error.code === '23505' && error.constraint === 'approval_notes_note_no_key') {
+      throw httpError(409, 'That approval note number is already in use.');
+    }
+    throw error;
+  }
 
   await audit(req, { noteId: id, action: 'note_updated', entity: 'note', entityId: id, detail: b });
   res.json({ note: await loadNote(id) });

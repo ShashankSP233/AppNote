@@ -375,6 +375,11 @@ async function newNoteDialog() {
 
   openModal('New approval note', `
     <form id="new-note-form" class="new-note-form">
+      <div class="field"><label for="new-note-number">Approval note number</label>
+        <input id="new-note-number" name="note_no" required maxlength="160" autocomplete="off"
+          placeholder="e.g. YG/Port/26-27/November/3">
+        <small>Enter the number approved for this note. The format is flexible, but it must be unique.</small>
+      </div>
       <div class="field new-note-subject"><span>Subject</span>
         <textarea name="subject" required placeholder="Requirement of … for our vessel … at …"></textarea>
         <small>Write a short title that explains what approval is needed.</small>
@@ -622,6 +627,10 @@ function detailsTab(note) {
         <header><h2>Note details</h2>${locked ? '<span class="spacer"></span><span class="muted">Read only at this stage</span>' : ''}</header>
         <div class="card-body">
           <form id="details-form" ${locked ? 'inert' : ''}>
+            <div class="field"><label for="note-number">Approval note number</label>
+              <input id="note-number" name="note_no" value="${esc(note.note_no || '')}" required maxlength="160" autocomplete="off">
+              <small>Use the number approved for this note. It can be changed while the note is editable.</small>
+            </div>
             <div class="field"><span>Subject</span>
               <textarea name="subject">${esc(note.subject)}</textarea></div>
             <div class="field"><span>Item description</span>

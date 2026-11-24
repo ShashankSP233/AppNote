@@ -61,6 +61,10 @@ where the two disagree the note says so.
 **The front page carries only a summary.** The full comparative statement is
 Annexure B, in landscape.
 
+**The note number is entered by the preparer.** This lets each approval use
+the prefix and format authorized for it; the number must be unique and can be
+corrected while the note is still editable.
+
 **Accounts verify tax line by line.** Each line keeps both the rate purchase
 proposed and the rate accounts confirmed, so the document can print "18%
 proposed, 5% confirmed". The accounts stage cannot be approved until every
