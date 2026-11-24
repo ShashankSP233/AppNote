@@ -13,9 +13,9 @@ server later without changes.
 ## What it does
 
 **Quotations go in as files.** Upload the PDF, the scan or the photograph. The
-system reads what it can — the PDF text layer first, then OCR, then an AI
-reader for the really poor images — and puts the figures in front of you beside
-the attached copy.
+system reads what it can — the PDF text layer, OCR for scans, then local Python
+rules to identify supplier details, amounts and line items — and puts the
+figures in front of you beside the attached copy.
 
 **Nothing read by a machine is trusted.** Every extracted quotation sits at
 *unconfirmed* until a person has opened it, checked it against the copy on the
@@ -86,7 +86,8 @@ D…   Every quotation, selected vendor first
 
 ## Running it on your machine
 
-You need **Node.js 20.11 or newer** and **PostgreSQL 14 or newer**.
+You need **Node.js 20.11 or newer**, **Python 3.10 or newer**, and
+**PostgreSQL 14 or newer**.
 
 ```bash
 # 1. Create the database
@@ -238,20 +239,27 @@ GST and PAN are checked.
 
 ## Reading quotations
 
-`EXTRACTION_MODE` in `.env` controls this.
+`EXTRACTION_MODE` in `.env` controls this. Python performs the local field and
+line-item interpretation; Node handles uploads, PDF text and the existing OCR
+stage. The Python worker uses only the standard library, starts on demand, and
+does not send quotation contents to an outside service. On Windows the default
+Python command is `python`; on Linux it is `python3`. Set `APPNOTE_PYTHON` if
+Python is installed under a different command or path.
 
 | Stage | Needs | When it is used |
 |---|---|---|
-| PDF text layer | nothing extra | A PDF produced by a computer. Exact and fast. |
-| OCR | `tesseract.js` (installed by default) | Scans and photographs |
-| AI | `ANTHROPIC_API_KEY` set | Images too poor for OCR to lay out as a table |
+| PDF text layer | nothing extra | A PDF produced by a computer |
+| Python interpretation | Python 3.10+ | Extracts supplier identity, reference, dates, terms, totals and table rows from text |
+| OCR | `tesseract.js` (installed by default) | Scans and photographs when text extraction is weak |
 
-Each stage reports a confidence score. Below `EXTRACTION_CONFIDENCE_FLOOR`
-(45 by default) the screen says plainly that the figures are a draft and should
-be checked line by line.
+The parser prefers leaving an uncertain field blank over inventing it. It
+checks quantity × rate against each row amount and compares the line total with
+the printed total. Below `EXTRACTION_CONFIDENCE_FLOOR` (45 by default) the
+screen says plainly that the figures are a draft and should be checked line by
+line. The reviewer must still confirm the quotation before submission.
 
-If OCR or AI is unavailable the upload still succeeds — it simply asks you to
-type the figures in, and says why.
+If Python or OCR is unavailable, the upload still succeeds and asks you to
+type the figures in, with the extraction problem shown in the review warnings.
 
 Rasterising a scanned PDF for OCR additionally needs `@napi-rs/canvas`, which
 is not installed by default:
@@ -329,11 +337,12 @@ src/
   db.js               connection pool and transactions
   middleware.js       auth, uploads, errors, audit
   extract/
-    heuristics.js     reading a quotation from text
+    python.js         local Python parser bridge
     pdf.js            PDF text layer, row grouping, page rasterising
     ocr.js            tesseract.js, optional
-    ai.js             AI reader, optional
-    index.js          the fallback chain
+    index.js          PDF text and OCR fallback chain
+python/
+  extract_quote.py    vendor, terms, total and line-item interpretation
   routes/             auth, masters, notes, quotations, accounts, documents
   doc/                the .docx: front page and annexures
 public/               the browser application

@@ -68,7 +68,7 @@ app.get('/api/health', async (req, res) => {
     version: '0.2.0',
     database: db,
     extraction_mode: process.env.EXTRACTION_MODE || 'off',
-    ai_extraction: Boolean(process.env.ANTHROPIC_API_KEY),
+    extraction_engine: 'local-python-rules',
   });
 });
 

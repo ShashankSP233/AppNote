@@ -168,10 +168,12 @@ router.post('/notes/:id/quotations', upload.array('files', 12), wrap(async (req,
 
       await query(
         `INSERT INTO quotation_items
-           (quotation_id, line_no, line_key, description, quantity, unit, rate, amount, needs_review)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+           (quotation_id, line_no, line_key, description, quantity, unit, rate, amount, gst_rate, needs_review)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [created.id, item.line_no ?? index + 1, null, item.description,
-          quantity, item.unit || 'Nos', rate, amount, Boolean(item.needs_review)],
+          quantity, item.unit || 'Nos', rate, amount,
+          item.gst_rate === null || item.gst_rate === undefined ? null : num(item.gst_rate),
+          Boolean(item.needs_review)],
       );
     }
 
@@ -459,21 +461,41 @@ router.post('/quotations/:id/reextract', wrap(async (req, res) => {
         const quantity = num(item.quantity, 1);
         const rate = num(item.rate, 0);
         await query(
-          `INSERT INTO quotation_items (quotation_id, line_no, description, quantity, unit, rate, amount, needs_review)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          `INSERT INTO quotation_items (quotation_id, line_no, description, quantity, unit, rate, amount, gst_rate, needs_review)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [id, item.line_no ?? index + 1, item.description, quantity, item.unit || 'Nos',
-            rate, item.amount ?? round2(quantity * rate), Boolean(item.needs_review)],
+            rate, item.amount === null || item.amount === undefined ? null : round2(item.amount),
+            item.gst_rate === null || item.gst_rate === undefined ? null : num(item.gst_rate),
+            Boolean(item.needs_review)],
         );
       }
     }
 
     await query(
       `UPDATE quotations SET
-         source = $1, extraction_status = 'extracted', extraction_confidence = $2,
-         extraction_method = $3, extraction_notes = $4, extraction_raw = $5,
+         vendor_name = CASE WHEN vendor_source_id IS NULL THEN COALESCE($1, vendor_name) ELSE vendor_name END,
+         vendor_gstin = CASE WHEN vendor_source_id IS NULL THEN COALESCE($2, vendor_gstin) ELSE vendor_gstin END,
+         vendor_pan = CASE WHEN vendor_source_id IS NULL THEN COALESCE($3, vendor_pan) ELSE vendor_pan END,
+         quotation_ref = COALESCE($4, quotation_ref), quotation_date = COALESCE($5, quotation_date),
+         validity_days = COALESCE($6, validity_days), delivery_days = COALESCE($7, delivery_days),
+         delivery_text = COALESCE($8, delivery_text), delivery_basis = COALESCE($9, delivery_basis),
+         advance_percent = COALESCE($10, advance_percent), credit_days = COALESCE($11, credit_days),
+         retention_percent = COALESCE($12, retention_percent), payment_terms_text = COALESCE($13, payment_terms_text),
+         gst_rate = COALESCE($14, gst_rate), quoted_basic = COALESCE($15, quoted_basic),
+         quoted_total = COALESCE($16, quoted_total),
+         source = $17, extraction_status = 'extracted', extraction_confidence = $18,
+         extraction_method = $19, extraction_notes = $20, extraction_raw = $21,
          reviewed_by = NULL, reviewed_at = NULL, updated_at = now()
-       WHERE id = $6`,
-      [extraction.source, extraction.confidence, extraction.method,
+       WHERE id = $22`,
+      [extraction.fields?.vendor_name || null, extraction.fields?.vendor_gstin || null,
+        extraction.fields?.vendor_pan || null, extraction.fields?.quotation_ref || null,
+        extraction.fields?.quotation_date || null, extraction.fields?.validity_days ?? null,
+        extraction.fields?.delivery_days ?? null, extraction.fields?.delivery_text || null,
+        extraction.fields?.delivery_basis || null, extraction.fields?.advance_percent ?? null,
+        extraction.fields?.credit_days ?? null, extraction.fields?.retention_percent ?? null,
+        extraction.fields?.payment_terms_text || null, extraction.fields?.gst_rate ?? null,
+        extraction.fields?.quoted_basic ?? null, extraction.fields?.quoted_total ?? null,
+        extraction.source, extraction.confidence, extraction.method,
         extraction.warnings?.join('\n') || null,
         JSON.stringify({ fields: extraction.fields, items: extraction.items, warnings: extraction.warnings }),
         id],

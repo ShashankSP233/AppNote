@@ -29,7 +29,7 @@ async function getPdfjs() {
  * within a tolerance of each other are one row, ordered left to right, and
  * wide horizontal gaps become column separators.
  */
-export function itemsToLines(items, { yTolerance = 3, columnGap = 12 } = {}) {
+export function itemsToLines(items, { yTolerance = 3, columnGap = 4 } = {}) {
   const fragments = items
     .filter((it) => typeof it.str === 'string' && it.str.trim() !== '')
     .map((it) => ({
