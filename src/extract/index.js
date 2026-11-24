@@ -74,7 +74,11 @@ export async function extractFromFiles(files, { mode = EXTRACTION_MODE } = {}) {
           notes.push(`${file.originalName} appears to be a scan with no text layer.`);
           scannedPdfBuffers.push(file);
         } else if (result.text.trim()) {
-          texts.push(result.text);
+          // Keep each source page boundary. Table rows frequently continue on
+          // the next page, and explicit boundaries help the local parser avoid
+          // joining unrelated header/footer fragments into one item.
+          texts.push((result.perPage?.length ? result.perPage : [result.text])
+            .join('\n\n__PAGE_BREAK__\n\n'));
         }
       } catch (error) {
         notes.push(`${file.originalName} could not be opened as a PDF: ${error.message}`);

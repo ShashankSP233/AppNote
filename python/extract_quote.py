@@ -114,32 +114,61 @@ def date_matches(text: str) -> list[str]:
 
 def find_vendor(lines: list[str]) -> str | None:
     candidates: list[tuple[int, int, str]] = []
-    for index, line in enumerate(lines[:35]):
-        trimmed = line.strip(" \t|:-")
-        if len(trimmed) < 4 or len(trimmed) > 110 or NOISE_START.search(trimmed):
-            continue
-        if BUYER_PATTERN.search(trimmed) or GSTIN_RE.search(trimmed) or PAN_RE.fullmatch(trimmed):
-            continue
-        if re.fullmatch(r"[\d\W]+", trimmed):
-            continue
+    buyer_start = next((index for index, line in enumerate(lines)
+                        if re.search(r"details\s+of\s+buyer|buyer|billed\s*to|bill\s*to|consignee|shipped\s*to|ship\s*to", line, re.I)), None)
+    header_limit = min(35, buyer_start) if buyer_start is not None else 20
 
-        score = 0
-        if re.match(r"^m/s\.?\s*", trimmed, re.I):
-            score += 100
-            trimmed = re.sub(r"^m/s\.?\s*", "", trimmed, flags=re.I)
-        if re.match(r"^(supplier|vendor|seller)\s*[:|-]", line, re.I):
-            score += 95
-            trimmed = re.sub(r"^(supplier|vendor|seller)\s*[:|-]\s*", "", trimmed, flags=re.I)
-        if BUSINESS_PATTERN.search(trimmed):
-            score += 30
-        if any(ch.isalpha() for ch in trimmed):
-            score += 6
-        if re.search(r"\b(quotation|quote|offer|proforma)\b", " ".join(lines[max(0, index - 2):index + 3]), re.I):
-            score += 7
-        score -= min(index, 20)
-        if len(trimmed) > 85:
-            score -= 15
-        candidates.append((score, -index, trimmed.rstrip(".,; ")))
+    for index, line in enumerate(lines[:header_limit]):
+        parts = [part.strip(" \t|:-") for part in line.split("|") if part.strip(" \t|:-")]
+        # PDF text order sometimes splits a supplier's logotype into adjacent
+        # fragments. Evaluate short adjacent groups, but never combine an
+        # entire address/footer into a fake company name.
+        phrases = list(parts)
+        for start in range(len(parts)):
+            for end in range(start + 2, min(len(parts), start + 4) + 1):
+                phrases.append(" ".join(parts[start:end]))
+
+        for phrase in phrases:
+            trimmed = re.sub(r"\s+", " ", phrase).strip(" .,:;-|")
+            if len(trimmed) < 4 or len(trimmed) > 85 or NOISE_START.search(trimmed):
+                continue
+            if BUYER_PATTERN.search(trimmed) or GSTIN_RE.search(trimmed) or PAN_RE.fullmatch(trimmed):
+                continue
+            if re.fullmatch(r"[\d\W]+", trimmed):
+                continue
+            # Reject isolated pieces of Dharti's full legal name when PDF
+            # columns have separated the word "Dharti" from the suffix.
+            if re.fullmatch(r"(?:dharti\s+)?infrastructure\s+limited(?:\s*\|\s*(?:dharti\s+)?infrastructure\s+limited)?", trimmed, re.I):
+                continue
+            if re.search(r"all types?|raw material|manufacturer|address|phone|mobile|email|gstin|quotation", trimmed, re.I):
+                continue
+
+            score = 25 - index
+            if re.match(r"^m/s\.?\s*", trimmed, re.I):
+                score += 120
+                trimmed = re.sub(r"^m/s\.?\s*", "", trimmed, flags=re.I)
+            if re.match(r"^(supplier|vendor|seller)\s*[:|-]", phrase, re.I):
+                score += 110
+                trimmed = re.sub(r"^(supplier|vendor|seller)\s*[:|-]\s*", "", trimmed, flags=re.I)
+            if BUSINESS_PATTERN.search(trimmed):
+                score += 60
+            if len(trimmed.split()) >= 2:
+                score += 12
+            # A real letterhead name usually appears as one compact phrase.
+            # Penalize duplicated PDF fragments and generic legal suffixes;
+            # otherwise they can outrank the actual name (e.g. “Fortune Metal
+            # Industries”) merely because they contain “Limited”.
+            if len(set(re.findall(r"[a-z]+", trimmed.lower()))) < 2:
+                score -= 35
+            if re.fullmatch(r"(?:infrastructure|engineering|industrial|metal|steel)?\s*(?:private|pvt\.?|limited|ltd\.?)", trimmed, re.I):
+                score -= 55
+            if re.search(r"\b(dharti|yogayatan)\b", trimmed, re.I):
+                score -= 250
+            # Taglines tend to contain these descriptive words without naming
+            # the company; a short registered/business name scores higher.
+            if len(trimmed) > 60:
+                score -= 20
+            candidates.append((score, -index, trimmed.rstrip(".,; ")))
 
     if not candidates:
         return None
@@ -149,34 +178,63 @@ def find_vendor(lines: list[str]) -> str | None:
 def find_gstin(text: str, vendor: str | None) -> str | None:
     lines = text.splitlines()
     vendor_words = [word for word in re.findall(r"[a-z0-9]+", (vendor or "").lower()) if len(word) > 3]
-    buyer_starts = [
-        index for index, line in enumerate(lines)
-        if re.search(r"details\s+of\s+buyer|buyer|billed\s*to|bill\s*to|consignee|shipped\s*to|ship\s*to", line, re.I)
-    ]
-    first_buyer_section = min(buyer_starts) if buyer_starts else None
+    vendor_line_index = None
+    if vendor_words:
+        vendor_line_index = max(
+            ((sum(word in line.lower() for word in vendor_words), -index, index) for index, line in enumerate(lines[:50])),
+            default=(0, 0, None),
+        )[2]
+        if vendor_line_index is not None and not any(word in lines[vendor_line_index].lower() for word in vendor_words):
+            vendor_line_index = None
+    buyer_marker = re.compile(r"details\s+of\s+buyer|buyer|billed\s*to|bill\s*to|consignee|shipped\s*to|ship\s*to|customer\s+details", re.I)
+    buyer_sections = [index for index, line in enumerate(lines) if buyer_marker.search(line)]
+    first_buyer_section = buyer_sections[0] if buyer_sections else None
     candidates = []
     for index, line in enumerate(lines):
-        match = GSTIN_RE.search(line)
-        if not match:
+        matches = list(GSTIN_RE.finditer(line))
+        if not matches:
             continue
-        context = " ".join(lines[max(0, index - 1):min(len(lines), index + 2)])
-        seller_context = re.search(r"supplier|vendor|seller|from", context, re.I)
-        # In two-column buyer/consignee headers, nearby text from both columns
-        # can be flattened onto one PDF line. Treat the document's first buyer
-        # block as a boundary and prefer the seller GSTIN printed above it.
-        if first_buyer_section is not None and index >= first_buyer_section and not seller_context:
-            continue
-        if re.search(r"our\s+gst|company\s+gst", line, re.I) and not seller_context:
-            continue
-        score = 0
-        if seller_context:
-            score += 8
-        if re.search(r"gstin|gst\s*(?:no|number|#)", line, re.I):
-            score += 2
-        if vendor_words and any(word in context.lower() for word in vendor_words):
-            score += 5
-        score -= index * 0.01
-        candidates.append((score, -index, match.group(1).upper()))
+        # Do not include the following row in buyer context: GSTIN printed in
+        # the supplier header often sits immediately above the “Details of
+        # Buyer / Consignee” headings. Including the next row wrongly marks
+        # the supplier GSTIN as belonging to the buyer.
+        party_context = " ".join(lines[max(0, index - 1):index + 1])
+        context = " ".join(lines[max(0, index - 2):min(len(lines), index + 3)])
+        seller_context = re.search(r"supplier|vendor|seller|sold\s*by|from\s*[:|-]", context, re.I)
+        buyer_context = buyer_marker.search(party_context) or re.search(r"purchaser|our\s+gst|company\s+gst", party_context, re.I)
+        for match in matches:
+            score = 0
+            if seller_context:
+                score += 80
+            if re.search(r"gstin|gst\s*(?:no|number|#)", line, re.I):
+                score += 5
+            if vendor_words and any(word in context.lower() for word in vendor_words):
+                score += 45
+            if vendor_line_index is not None:
+                score += max(0, 60 - abs(index - vendor_line_index) * 6)
+            before_buyer_section = first_buyer_section is not None and index < first_buyer_section
+            if first_buyer_section is not None:
+                score += 35 if before_buyer_section else -35
+            if buyer_context:
+                score -= 180
+            # In two-column quotations, the GST label/value can be on a line
+            # or two after “Consignee”. Keep penalizing the buyer block until
+            # another explicit supplier marker begins.
+            last_buyer_marker = max((marker for marker in buyer_sections if marker <= index), default=None)
+            if last_buyer_marker is not None and index - last_buyer_marker <= 8:
+                intervening = " ".join(lines[last_buyer_marker:index + 1])
+                if not re.search(r"supplier|vendor|seller|sold\s*by", intervening, re.I):
+                    score -= 70
+            score -= index * 0.001
+            candidates.append((score, -index, match.group(1).upper(), bool(buyer_context)))
+    # The seller's GSTIN is commonly in the letterhead, before the buyer and
+    # consignee blocks. Prefer an unlabelled GSTIN in that header region over
+    # any GSTIN within or after those blocks.
+    if first_buyer_section is not None:
+        supplier_header = [candidate for candidate in candidates
+                           if -candidate[1] < first_buyer_section and not candidate[3]]
+        if supplier_header:
+            return max(supplier_header)[2]
     return max(candidates)[2] if candidates else None
 
 
@@ -318,14 +376,14 @@ def find_totals(lines: list[str]):
         if not values:
             continue
         value = values[-1]
-        if re.search(r"grand\s*total|net\s*(?:payable|amount)|total\s*amount|amount\s*payable|invoice total|total\s*(?:including|incl\.?|inclusive of)\s*gst", low):
+        if re.search(r"grand\s*total|net\s*(?:payable|amount)|total\s*amount(?:\s*(?:after|including|incl\.?|inclusive of)\s*(?:gst|tax))?|amount\s*payable|invoice total|total\s*(?:after|including|incl\.?|inclusive of)\s*(?:gst|tax)", low):
             grand_candidates.append((10, index, value))
-        elif re.search(r"taxable\s*(?:value|amount)|sub\s*-?\s*total|total\s*basic|basic\s*(?:value|amount)|\btotal\b", low) and not re.search(r"gst|tax|grand|net|invoice", low):
-            priority = 8 if re.search(r"taxable|sub\s*-?\s*total|basic", low) else 3
-            if priority == 3:
-                generic_totals.append((priority, index, value))
-            else:
-                basic_candidates.append((priority, index, value))
+        elif re.search(r"taxable\s*(?:value|amount)|total\s*taxable|sub\s*-?\s*total|total\s*basic|basic\s*(?:value|amount)", low) and not re.search(r"\b(?:cgst|sgst|igst|gst)\b", low):
+            # “Taxable” is the basic amount before GST. Do not filter it out
+            # just because its spelling begins with “tax”.
+            basic_candidates.append((8, index, value))
+        elif re.search(r"\btotal\b", low) and not re.search(r"\b(?:cgst|sgst|igst|gst|tax|grand|net|invoice)\b", low):
+            generic_totals.append((3, index, value))
         elif re.search(r"\b(?:cgst|sgst|igst|gst|tax)\b", low):
             if re.search(r"(?:total\s*(?:gst|tax)|(?:gst|tax)\s*total)", low):
                 tax_totals.append((10, index, value))
@@ -397,9 +455,12 @@ def parse_items(lines: list[str]):
                     header["description"] = col
                 elif re.search(r"qty|quantity", value):
                     header["quantity"] = col
-                elif re.search(r"unit", value):
+                # A common supplier header is “Rate / UoM”. It names the rate
+                # column even though it also contains “UoM”; use independent
+                # checks so one label cannot hide the other.
+                if re.search(r"\b(?:unit|uom|unit of measure)\b", value) and not re.search(r"rate|unit price|price", value):
                     header["unit"] = col
-                elif re.search(r"rate|unit price|price", value):
+                if re.search(r"rate|unit price|price", value):
                     header["rate"] = col
                 adjacent_taxable_header = value.strip() == "taxable" and col + 1 < len(cells) and cells[col + 1].strip().lower() in {"value", "amount"}
                 if re.search(r"taxable\s*(?:value|amount)|amount\s*before\s*tax", value) or adjacent_taxable_header:
@@ -414,7 +475,7 @@ def parse_items(lines: list[str]):
             header_index = index
             break
 
-    def add_item(line_no, description, qty, unit, rate, total, gst_rate=None):
+    def add_item(line_no, description, qty, unit, rate, total, gst_rate=None, amount_derived=False):
         description = re.sub(r"\s+", " ", description or "").strip(" .:-")
         if not description or len(description) < 2 or re.fullmatch(r"[\d.,/-]+", description):
             return
@@ -437,6 +498,7 @@ def parse_items(lines: list[str]):
             "gst_rate": gst_rate,
             "reconciled": reconciled,
             "needs_review": not reconciled,
+            "amount_derived": amount_derived,
         })
 
     if header and header_index >= 0:
@@ -463,6 +525,7 @@ def parse_items(lines: list[str]):
             unit = unit or qty_unit
             rate = number_cell(get("rate"))
             total = number_cell(get("amount"))
+            amount_derived = False
             gst_parts = [number_cell(cells[pos]) for pos in header.get("gst_rates", []) if pos < len(cells)]
             gst_parts = [part for part in gst_parts if part is not None]
             gst_rate = round(sum(gst_parts), 2) if gst_parts else None
@@ -474,7 +537,18 @@ def parse_items(lines: list[str]):
                     if candidate is not None and candidate > 0 and candidate < 1e7 and UNIT_RE.fullmatch(cells[pos + 1]):
                         qty, unit = candidate, cells[pos + 1]
                         break
-            add_item(line_no, desc, qty, unit, rate, total, gst_rate)
+            if "amount" not in header and qty is not None and rate is not None:
+                total = round(qty * rate, 2)
+                amount_derived = True
+            add_item(line_no, desc, qty, unit, rate, total, gst_rate, amount_derived)
+        serials = [item["line_no"] for item in items if isinstance(item.get("line_no"), int)]
+        if len(serials) > 1:
+            missing = sorted((set(range(1, max(serials) + 1)) - set(serials)) if min(serials) > 1
+                             else (set(range(min(serials), max(serials) + 1)) - set(serials)))
+            if missing:
+                warnings.append("Possible skipped quotation item(s): serial number(s) " + ", ".join(map(str, missing)) + ". Check every page of the item table.")
+        elif len(serials) == 1 and serials[0] > 1:
+            warnings.append(f"The first captured quotation item is numbered {serials[0]}; earlier item(s) may have been skipped. Check every page of the item table.")
         return items, warnings
 
     # Conservative fallback for text extractions that lost the table header.
