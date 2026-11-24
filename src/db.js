@@ -13,7 +13,7 @@ types.setTypeParser(1700, (value) => (value === null ? null : Number(value))); /
 types.setTypeParser(20, (value) => (value === null ? null : Number(value)));   // INT8
 types.setTypeParser(1082, (value) => value);                                   // DATE as text
 
-const connectionString = process.env.DATABASE_URL
+const connectionString = process.env.APPNOTE_DB_URL
   || 'postgresql://postgres:postgres@localhost:5432/approval_notes';
 
 export const pool = new Pool({

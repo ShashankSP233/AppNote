@@ -146,8 +146,8 @@ async function main() {
   } catch (error) {
     console.error('\nSetup failed:', error.message);
     if (error.message.includes('ECONNREFUSED')) {
-      console.error('\nPostgreSQL does not appear to be running, or DATABASE_URL points somewhere else.');
-      console.error(`Database target: ${safeDatabaseTarget(process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/approval_notes')}`);
+      console.error('\nPostgreSQL does not appear to be running, or APPNOTE_DB_URL points somewhere else.');
+      console.error(`Database target: ${safeDatabaseTarget(process.env.APPNOTE_DB_URL || 'postgresql://postgres:postgres@localhost:5432/approval_notes')}`);
     }
     process.exitCode = 1;
   } finally {

@@ -5,8 +5,8 @@ import pg from 'pg';
 import { closeSourcePools } from './integrations/source-databases.js';
 
 const { Pool } = pg;
-const appSetupUrl = process.env.FDW_SETUP_DATABASE_URL || process.env.DATABASE_URL;
-if (!appSetupUrl) throw new Error('Set FDW_SETUP_DATABASE_URL for one-time setup, or DATABASE_URL to an AppNote database administrator URL.');
+const appSetupUrl = process.env.APPNOTE_FDW_SETUP_DB_URL || process.env.APPNOTE_DB_URL;
+if (!appSetupUrl) throw new Error('Set APPNOTE_FDW_SETUP_DB_URL for one-time setup, or APPNOTE_DB_URL to an AppNote database administrator URL.');
 
 // The setup connection is used only by this one-time command. The web server
 // will use the restricted login created below after setup completes.
@@ -224,15 +224,15 @@ async function storeRuntimeDatabaseUrl(runtimeUrl) {
     if (error.code !== 'ENOENT') throw error;
   }
   const remove = new Set([
-    'FDW_SETUP_DATABASE_URL', 'REQFLOW_FDW_SETUP_URL', 'SITEERP_FDW_SETUP_URL',
+    'APPNOTE_FDW_SETUP_DB_URL', 'REQFLOW_FDW_SETUP_URL', 'SITEERP_FDW_SETUP_URL',
     'REQFLOW_DATABASE_URL', 'SITEERP_DATABASE_URL',
   ]);
   const lines = contents.split(/\r?\n/).filter((line) => {
     const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
-    return !match || (!remove.has(match[1]) && match[1] !== 'DATABASE_URL');
+    return !match || (!remove.has(match[1]) && match[1] !== 'APPNOTE_DB_URL');
   });
   while (lines.length && !lines.at(-1)) lines.pop();
-  lines.push(`DATABASE_URL=${runtimeUrl}`);
+  lines.push(`APPNOTE_DB_URL=${runtimeUrl}`);
   await fs.writeFile(envPath, `${lines.join('\n')}\n`, { encoding: 'utf8' });
 }
 
@@ -276,9 +276,9 @@ async function verifySourceDatabases(sourceUrls) {
 
 const temporarySetupMappings = new Set();
 try {
-  const appDatabase = new URL(process.env.DATABASE_URL || appSetupUrl);
+  const appDatabase = new URL(process.env.APPNOTE_DB_URL || appSetupUrl);
   const databaseName = decodeURIComponent(appDatabase.pathname.slice(1));
-  if (!databaseName) throw new Error('The AppNote DATABASE_URL must include its database name.');
+  if (!databaseName) throw new Error('The AppNote APPNOTE_DB_URL must include its database name.');
 
   const sourceUrls = Object.fromEntries(Object.entries(SOURCES).map(([key, source]) => [key, setupSourceUrl(source)]));
   for (const [key, source] of Object.entries(SOURCES)) {
@@ -331,7 +331,7 @@ try {
 
   console.log(`FDW setup complete. AppNote runtime now uses the restricted role ${ROLE.runtime}.`);
   console.log('Source access: Reqflow SELECT on four required tables; SiteERP SELECT on vendors; SiteERP vendor role SELECT on approved columns and INSERT on vendors only.');
-  console.log('Setup and direct-source URLs were removed from .env. Restart AppNote from a fresh process so it loads only the restricted runtime connection.');
+  console.log('Setup and direct-source URLs were removed from .env. Restart AppNote from a fresh process so it loads APPNOTE_DB_URL with the restricted runtime connection.');
 } catch (error) {
   console.error(`FDW setup failed: ${error.message || error.code || 'database error'}`);
   process.exitCode = 1;

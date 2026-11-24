@@ -29,6 +29,11 @@ const sessionMaxAge = Number.isFinite(configuredSessionHours) && configuredSessi
 
 const app = express();
 
+if (isProduction && !process.env.APPNOTE_DB_URL) {
+  console.error('APPNOTE_DB_URL must point to the AppNote database in production. Refusing to use the development default.');
+  process.exit(1);
+}
+
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
@@ -93,7 +98,7 @@ const server = app.listen(PORT, HOST, () => {
   console.log(`Approval Note Generator v0.2 listening on ${address}`);
   healthCheck().then((db) => {
     if (db.ok) console.log(`Database connected: ${db.database}`);
-    else console.error(`Database is not reachable: ${db.error}\nCheck DATABASE_URL and PostgreSQL availability. To create missing AppNote tables, run "npm run db:init"; do not use "npm run db:reset" on a database that contains data.`);
+    else console.error(`Database is not reachable: ${db.error}\nCheck APPNOTE_DB_URL and PostgreSQL availability. To create missing AppNote tables, run "npm run db:init"; do not use "npm run db:reset" on a database that contains data.`);
   });
 });
 
