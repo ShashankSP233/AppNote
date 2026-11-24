@@ -15,6 +15,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'ChangeMe123!';
 
+function safeDatabaseTarget(connectionString) {
+  try {
+    const url = new URL(connectionString);
+    return `${url.protocol}//${url.username ? `${url.username}@` : ''}${url.hostname}${url.port ? `:${url.port}` : ''}${url.pathname}`;
+  } catch {
+    return '(configured database URL; details hidden)';
+  }
+}
+
 const TABLES = [
   'app_sessions',
   'vendor_reviews',
@@ -138,7 +147,7 @@ async function main() {
     console.error('\nSetup failed:', error.message);
     if (error.message.includes('ECONNREFUSED')) {
       console.error('\nPostgreSQL does not appear to be running, or DATABASE_URL points somewhere else.');
-      console.error(`Current DATABASE_URL: ${process.env.DATABASE_URL || '(default) postgresql://postgres:postgres@localhost:5432/approval_notes'}`);
+      console.error(`Database target: ${safeDatabaseTarget(process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/approval_notes')}`);
     }
     process.exitCode = 1;
   } finally {

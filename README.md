@@ -110,9 +110,9 @@ the Private profile, limited to `LocalSubnet`.
 
 ### Preparing Reqflow and SiteERP data sources
 
-Keep the restored source databases separate from `approval_notes`. After the
-database copies are restored on this PC, set `REQFLOW_DATABASE_URL` and
-`SITEERP_DATABASE_URL` in `.env` to the SiteERP PostgreSQL database, then run:
+Keep the source databases separate from AppNote's database. Set
+`REQFLOW_DATABASE_URL` to Reqflow and `SITEERP_DATABASE_URL` to SiteERP, then
+run:
 
 ```bash
 npm run db:check-sources
@@ -127,9 +127,29 @@ npm run db:init
 npm run db:setup-fdw
 ```
 
-The setup keeps Reqflow and SiteERP reads on read-only roles. It also creates a
-separate SiteERP role limited to reading and inserting vendor rows. AppNote
-accepts quotation vendor names without an ERP match; it only attempts to add a
+For `db:setup-fdw`, supply the AppNote, Reqflow, and SiteERP administrator
+URLs temporarily as `FDW_SETUP_DATABASE_URL`, `REQFLOW_FDW_SETUP_URL`, and
+`SITEERP_FDW_SETUP_URL`. Do not save them in `.env`. Use the exact restored
+database names on ServerPC (including `site_erp_v2` if that is its actual
+SiteERP database name).
+
+Elevated credentials are needed for the initial schema/seed and one-time FDW
+setup. The FDW setup creates a restricted AppNote runtime login and maps the Reqflow and SiteERP foreign servers
+to narrowly scoped remote roles, and changes `DATABASE_URL` in `.env` to the
+restricted login. It also creates a separate SiteERP role limited to reading
+the vendor fields AppNote needs and inserting vendors. The setup stops if one
+of its dedicated PostgreSQL role names already belongs to something else.
+Pass `FDW_SETUP_DATABASE_URL`, `REQFLOW_FDW_SETUP_URL`, and
+`SITEERP_FDW_SETUP_URL` as temporary PowerShell environment variables; do not
+store administrator URLs in the app's `.env`. The setup removes source URLs
+from `.env` after creating the mappings; supply restricted source URLs again
+only if you later run `db:check-sources`. Start PM2 from a fresh PowerShell
+session after setup so it cannot inherit temporary credentials.
+The runtime login is not a PostgreSQL superuser or database owner: it can
+change AppNote records, read the approved Reqflow/SiteERP tables, and request
+the narrowly limited SiteERP vendor insert.
+
+AppNote accepts quotation vendor names without an ERP match; it only attempts to add a
 new ERP vendor after a user selects that quotation, and only when a GSTIN or
 PAN is present. If the write connection is unavailable, the local selection
 still succeeds.
@@ -320,15 +340,23 @@ test/                 unit, end-to-end and browser tests
 
 ## Moving it to a server
 
-1. Set `NODE_ENV=production` and a real `SESSION_SECRET` — the server refuses
-   to start in production without one.
-2. Point `DATABASE_URL` at the server database, with `PGSSL=require` if it is
-   remote.
-3. Put it behind HTTPS. Session cookies are marked `secure` in production and
-   will not survive plain HTTP.
-4. Move `UPLOAD_DIR` onto storage that is backed up — the attachments are the
+1. On a new, empty AppNote database, set a unique temporary `DEMO_PASSWORD`
+   and run `npm run db:seed` once to create the initial administrator and
+   accounts. This also adds demo users and master records; change the admin
+   password and deactivate unused demo accounts before opening the app to staff.
+   Do not run `db:reset` on a database containing data.
+2. Set `DATABASE_URL` to an administrator connection for the one-time schema
+   and seed setup. Run `npm run db:setup-fdw` with the three temporary FDW
+   setup URLs described above. The script replaces `DATABASE_URL` in `.env`
+   with the restricted AppNote login; the web app must run with that URL.
+3. Set `NODE_ENV=production` and a real `SESSION_SECRET` — the server refuses
+   to start in production without one. `PGSSL=require` is only needed when the
+   AppNote connection is remote and configured for TLS.
+4. Put it behind HTTPS. Session cookies are marked `secure` in production. If
+   the trusted internal Nginx route is HTTP-only, set `SESSION_COOKIE_SECURE=false`
+   explicitly; otherwise sign-in cookies will not be sent. HTTPS is preferred.
+5. Move `UPLOAD_DIR` onto storage that is backed up — the attachments are the
    evidence behind every note.
-5. Change every seeded password.
 
 ---
 

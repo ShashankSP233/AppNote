@@ -19,6 +19,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 const isProduction = process.env.NODE_ENV === 'production';
+const secureCookieSetting = String(process.env.SESSION_COOKIE_SECURE || '').trim().toLowerCase();
+const secureSessionCookie = secureCookieSetting === 'true'
+  || (secureCookieSetting !== 'false' && isProduction);
 const configuredSessionHours = Number(process.env.SESSION_HOURS || 12);
 const sessionMaxAge = Number.isFinite(configuredSessionHours) && configuredSessionHours > 0
   ? configuredSessionHours * 60 * 60 * 1000
@@ -48,7 +51,7 @@ app.use(session({
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
-    secure: isProduction,
+    secure: secureSessionCookie,
     maxAge: sessionMaxAge,
   },
 }));
@@ -90,7 +93,7 @@ const server = app.listen(PORT, HOST, () => {
   console.log(`Approval Note Generator v0.2 listening on ${address}`);
   healthCheck().then((db) => {
     if (db.ok) console.log(`Database connected: ${db.database}`);
-    else console.error(`Database is not reachable: ${db.error}\nRun "npm run db:reset" once PostgreSQL is up.`);
+    else console.error(`Database is not reachable: ${db.error}\nCheck DATABASE_URL and PostgreSQL availability. To create missing AppNote tables, run "npm run db:init"; do not use "npm run db:reset" on a database that contains data.`);
   });
 });
 
