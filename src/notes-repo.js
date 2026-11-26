@@ -128,7 +128,7 @@ export async function loadNote(noteId, { includeFiles = true, includeSensitiveVe
   }
   delete note.source_requisition_snapshot;
 
-  const [quotations, noteItems, criteriaRows, criteriaValues, milestones, accounts, steps, requisitionItems] =
+  const [quotations, noteItems, criteriaRows, criteriaValues, milestones, accounts, steps, editRequest, workflowComments, requisitionItems] =
     await Promise.all([
       many(
         `SELECT q.*,
@@ -162,6 +162,21 @@ export async function loadNote(noteId, { includeFiles = true, includeSensitiveVe
            LEFT JOIN users u ON u.id = w.assignee_id
           WHERE w.note_id = $1
           ORDER BY w.step_order, w.id`,
+        [noteId],
+      ),
+      many(
+        `SELECT id, requested_by_name, requested_by_role, stage_type, request_text, status, requested_at,
+                resubmitted_at, resubmitted_by
+           FROM note_edit_requests
+          WHERE note_id = $1
+          ORDER BY requested_at, id`,
+        [noteId],
+      ),
+      many(
+        `SELECT stage_type, actor_name, decision, comment, created_at
+           FROM workflow_comment_history
+          WHERE note_id = $1
+          ORDER BY created_at, id`,
         [noteId],
       ),
       note.requisition_source === 'reqflow'
@@ -307,6 +322,10 @@ export async function loadNote(noteId, { includeFiles = true, includeSensitiveVe
     milestones,
     accounts: accounts || null,
     steps,
+    edit_request: editRequest.find((request) => request.status === 'pending') || null,
+    edit_request_pending: editRequest.some((request) => request.status === 'pending'),
+    edit_requests: editRequest,
+    workflow_comments: workflowComments,
     files,
     requisition_items: requisitionItems,
     selected_quotation: selected,
@@ -426,8 +445,16 @@ export function assessAccountsReadiness(note) {
     return { canApprove: false, blocking };
   }
 
+  if (!accounts.workflow_reviewed_at) {
+    blocking.push('Accounts must complete and save the Accounts tab during this approval round.');
+  }
+
   if (!accounts.gst_number_checked) blocking.push("The vendor's GST number has not been verified.");
   if (!accounts.pan_number_checked) blocking.push("The vendor's PAN has not been verified.");
+  if (!accounts.bank_details_checked) blocking.push('The vendor bank details have not been checked.');
+  if (!accounts.msme_checked) blocking.push('The vendor MSME status has not been checked.');
+  if (!accounts.duplicate_checked) blocking.push('The duplicate-payment check has not been completed.');
+  if (!accounts.budget_checked) blocking.push('Budget availability has not been confirmed.');
 
   if (accounts.tds_applicable && !accounts.tds_section) {
     blocking.push('TDS is marked applicable but no section has been chosen.');
@@ -494,12 +521,20 @@ export async function listNotes({
   if (projectId) where.push(`n.project_id = ${param(Number(projectId))}`);
   if (preparedBy) where.push(`n.prepared_by = ${param(Number(preparedBy))}`);
   if (assignedTo) {
-    where.push(`EXISTS (
+    where.push(`(EXISTS (
       SELECT 1 FROM workflow_steps w
        WHERE w.note_id = n.id
          AND w.assignee_id = ${param(Number(assignedTo))}
          AND w.decision = 'pending'
-    )`);
+         AND NOT EXISTS (
+           SELECT 1 FROM note_edit_requests er
+            WHERE er.note_id = n.id AND er.status = 'pending'
+         )
+    ) OR EXISTS (
+      SELECT 1 FROM note_edit_requests er
+       WHERE er.note_id = n.id AND er.status = 'pending'
+         AND n.prepared_by = ${param(Number(assignedTo))}
+    ))`);
   }
   if (search) {
     const needle = `%${String(search).trim()}%`;
@@ -513,6 +548,8 @@ export async function listNotes({
   const rows = await many(
     `SELECT n.id, n.note_no, n.note_date, n.subject, n.status, n.current_stage,
             n.status_label, n.created_at, n.updated_at,
+            EXISTS (SELECT 1 FROM note_edit_requests er
+                     WHERE er.note_id = n.id AND er.status = 'pending') AS edit_request_pending,
             COALESCE(n.source_requisition_snapshot->>'ref_number', r.requisition_no) AS requisition_no,
             COALESCE(n.source_requisition_snapshot->>'project_name', p.name) AS project_name,
             u.full_name AS preparer_name,

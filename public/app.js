@@ -119,8 +119,8 @@ function offerLevel(note) {
   return { key: 'single', count, label: count === 1 ? 'Single offer — needs a written justification' : 'No offers yet' };
 }
 
-const statusBadge = (status) =>
-  `<span class="badge ${STATUS_CLASS[status] || 'draft'}">${esc(STATUS_LABEL[status] || status)}</span>`;
+const statusBadge = (status, editRequestPending = false) =>
+  `<span class="badge ${STATUS_CLASS[status] || 'draft'}">${esc(editRequestPending ? 'Edits required' : (STATUS_LABEL[status] || status))}</span>`;
 
 const SOURCE_LABEL = {
   manual: 'Typed in', pdf_text: 'Read from PDF', ocr: 'Read by OCR', ai: 'Read by AI',
@@ -349,7 +349,7 @@ function listTable(notes, inbox) {
         <td>${esc(note.selected_vendor || '—')}</td>
         <td class="num">${money(note.basic_amount, 0)}</td>
         <td class="center">${note.quotation_count}</td>
-        <td>${statusBadge(note.status)}</td>
+        <td>${statusBadge(note.status, note.edit_request_pending)}</td>
       </tr>`).join('')}
     </tbody></table>`;
 }
@@ -536,7 +536,7 @@ async function renderNote(id, tab) {
     <div class="toolbar">
       <button class="btn ghost small" onclick="location.hash='notes'">← All notes</button>
       <h1 style="margin:0">${esc(note.note_no || `Note #${note.id}`)}</h1>
-      ${statusBadge(note.status)}
+      ${statusBadge(note.status, note.edit_request_pending)}
       <div class="spacer"></div>
       <a class="btn" href="/api/notes/${note.id}/document" download>Download .docx</a>
       <a class="btn" href="/api/notes/${note.id}/package" download>Download package (.zip)</a>
@@ -567,6 +567,12 @@ async function renderNote(id, tab) {
 function readinessBanner(note) {
   const { blocking, advisory } = note.readiness;
   let html = '';
+
+  if (note.edit_request_pending) {
+    html += `<div class="notice warn"><strong>Edits required before approval can continue</strong>
+      <p>${esc(note.edit_request.request_text)}</p>
+      <p class="muted">Requested by ${esc(note.edit_request.requested_by_name)} (${esc(note.edit_request.requested_by_role)}) on ${fmtDateTime(note.edit_request.requested_at)}. Update the note, then resubmit it for every approval stage.</p></div>`;
+  }
 
   if (blocking.length) {
     html += `<div class="notice warn"><strong>This note cannot be submitted yet</strong>
@@ -1701,6 +1707,7 @@ function accountsTab(note) {
 
   return `
   ${!isAccounts ? '<div class="notice info">This is the accounts view. Only the accounts team can change anything here.</div>' : ''}
+  ${isAccounts && !accounts.workflow_reviewed_at ? '<div class="notice warn">Accounts must save this review during the current approval round before the Accounts stage can approve it.</div>' : ''}
 
   <div class="card">
     <header><h2>Item-wise tax verification</h2>
@@ -2014,7 +2021,7 @@ WIRE.schedule = (note) => {
 // --- Workflow --------------------------------------------------------------
 
 const STAGE_ROLE = { check: 'checker', verify: 'verifier', accounts: 'accounts', approve: 'approver' };
-const STAGE_LABEL = { check: 'Checking', verify: 'Verification', accounts: 'Accounts', approve: 'Approval' };
+const STAGE_LABEL = { accounts: 'Accounts', check: 'Checkers', verify: 'Verification', approve: 'Approvers' };
 const STAGE_STATUS = {
   pending_check: 'check', pending_verify: 'verify',
   pending_accounts: 'accounts', pending_approval: 'approve',
@@ -2029,6 +2036,8 @@ function workflowTab(note) {
 
   const canSubmit = ['draft', 'on_hold', 'rejected'].includes(note.status)
     && (state.user.role === 'admin' || note.prepared_by === state.user.id);
+  const canRequestEdits = currentStage
+    && ['checker', 'verifier', 'accounts', 'approver', 'admin'].includes(state.user.role);
 
   return `
   <div class="grid-2">
@@ -2044,7 +2053,11 @@ function workflowTab(note) {
             <div class="what">
               <b>${esc(STAGE_LABEL[step.step_type] || step.step_type)}</b>
               — ${esc(step.assignee_name || 'anyone holding the role')}
-              ${step.decision !== 'pending' ? `<span class="badge ${step.decision === 'approved' ? 'approved' : step.decision === 'rejected' ? 'rejected' : 'hold'}">${step.decision}</span>` : '<span class="badge pending">waiting</span>'}
+              ${note.edit_request_pending && step.decision === 'pending'
+                ? '<span class="badge hold">awaiting edits</span>'
+                : step.decision !== 'pending'
+                  ? `<span class="badge ${step.decision === 'approved' ? 'approved' : step.decision === 'rejected' ? 'rejected' : 'hold'}">${step.decision}</span>`
+                  : '<span class="badge pending">waiting</span>'}
               ${step.comments ? `<div class="muted">${esc(step.comments)}</div>` : ''}
               <div class="when">${step.decided_at ? fmtDateTime(step.decided_at) : ''}</div>
             </div></li>`).join('')}
@@ -2055,12 +2068,28 @@ function workflowTab(note) {
     <div class="card">
       <header><h3>Actions</h3></header>
       <div class="card-body">
+        ${note.edit_request_pending ? `<div class="notice warn"><strong>Edits were requested by ${esc(note.edit_request.requested_by_name)} (${esc(note.edit_request.requested_by_role)}) on ${fmtDateTime(note.edit_request.requested_at)}</strong>
+          <p>${esc(note.edit_request.request_text)}</p>
+          <p class="muted">Update the requested information. On resubmission, all assigned reviewers will approve again, starting with Accounts.</p></div>` : ''}
+
         ${canSubmit ? `
           ${note.readiness.canSubmit
-            ? '<p>Everything required is in place.</p><button class="btn primary wide" id="submit-note">Submit for approval</button>'
+            ? `<p>${note.edit_request_pending ? 'The updated note is ready to return to the full approval workflow.' : 'Everything required is in place.'}</p><button class="btn primary wide" id="submit-note">${note.edit_request_pending ? 'Resubmit for all approvals' : 'Submit for approval'}</button>`
             : `<div class="notice warn"><strong>Not ready yet</strong>
                <ul>${note.readiness.blocking.map((b) => `<li>${esc(b)}</li>`).join('')}</ul></div>`}
         ` : ''}
+
+        ${canRequestEdits ? `
+          <div class="card-body" style="border:1px solid var(--line);border-radius:8px;margin-top:12px;padding:12px">
+            <label style="display:flex;gap:8px;align-items:center;font-weight:600">
+              <input type="checkbox" id="edit-required-toggle"> Edits are required from the preparer
+            </label>
+            <div id="edit-request-fields" hidden style="margin-top:10px">
+              <div class="field"><span>Describe the required changes</span>
+                <textarea id="edit-request-text" rows="3" placeholder="For example: correct the GST rate and update the payment schedule."></textarea></div>
+              <button class="btn danger" id="send-edit-request">Return note to preparer</button>
+            </div>
+          </div>` : ''}
 
         ${myTurn ? `
           <h4>This note is waiting on you at the ${esc(STAGE_LABEL[currentStage].toLowerCase())} stage</h4>
@@ -2078,7 +2107,7 @@ function workflowTab(note) {
             : note.status === 'draft' ? 'This note is still being prepared.'
             : `This note is at the ${esc(STAGE_LABEL[currentStage] || note.status)} stage. There is nothing for you to do on it.`}</p>` : ''}
 
-        ${['on_hold', 'rejected'].includes(note.status) && (state.user.role === 'admin' || note.prepared_by === state.user.id)
+        ${['on_hold', 'rejected'].includes(note.status) && !note.edit_request_pending && (state.user.role === 'admin' || note.prepared_by === state.user.id)
           ? '<button class="btn wide" id="resume-note" style="margin-top:9px">Put it back into the flow</button>' : ''}
       </div>
     </div>
@@ -2087,12 +2116,19 @@ function workflowTab(note) {
 
 WIRE.workflow = (note) => {
   el('submit-note')?.addEventListener('click', () => {
+    if (note.edit_request_pending) {
+      api.post(`/notes/${note.id}/submit`, {}).then(async () => {
+        toast('Resubmitted. All approval stages will review the updated note.', 'good');
+        await reload();
+      }).catch(showError);
+      return;
+    }
     const byRole = (role) => state.users.filter((u) => u.role === role && u.is_active);
 
     openModal('Submit for approval', `
       <p class="muted">Leave a stage unassigned and anyone holding that role can act on it.</p>
       <form id="submit-form">
-        ${['check', 'verify', 'accounts', 'approve'].map((stage) => `
+        ${['accounts', 'check', 'verify', 'approve'].map((stage) => `
           <fieldset class="field assignment-field">
             <legend>${esc(STAGE_LABEL[stage])}</legend>
             <div class="assignment-options">
@@ -2109,7 +2145,7 @@ WIRE.workflow = (note) => {
     el('submit-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const assignments = {};
-      for (const stage of ['check', 'verify', 'accounts', 'approve']) {
+      for (const stage of ['accounts', 'check', 'verify', 'approve']) {
         const selected = [...event.target.querySelectorAll(`input[name="${stage}"]:checked`)]
           .map((input) => Number(input.value));
         if (selected.length) assignments[stage] = selected;
@@ -2121,6 +2157,25 @@ WIRE.workflow = (note) => {
         await reload();
       } catch (error) { showError(error); }
     });
+  });
+
+  el('edit-required-toggle')?.addEventListener('change', (event) => {
+    el('edit-request-fields').hidden = !event.target.checked;
+    if (event.target.checked) el('edit-request-text').focus();
+  });
+
+  el('send-edit-request')?.addEventListener('click', async () => {
+    const requestText = el('edit-request-text').value.trim();
+    if (!requestText) {
+      toast('Describe what needs to change so the preparer can update it.', 'bad');
+      el('edit-request-text').focus();
+      return;
+    }
+    try {
+      await api.post(`/notes/${note.id}/request-edits`, { request_text: requestText });
+      toast('Edits required. The note was returned to its preparer.', 'good');
+      await reload();
+    } catch (error) { showError(error); }
   });
 
   view().querySelectorAll('[data-decision]').forEach((button) => {
@@ -2163,9 +2218,9 @@ WIRE.workflow = (note) => {
  */
 const ROLE_GUIDE = [
   { value: 'preparer', label: 'Preparer (Purchase)', can: 'Creates notes, uploads and confirms quotations, selects the vendor, submits for approval.' },
-  { value: 'checker', label: 'Checker', can: 'First review stage. Approves, holds or rejects a submitted note.' },
-  { value: 'verifier', label: 'Verifier', can: 'Second review stage, after the checkers.' },
-  { value: 'accounts', label: 'Accounts', can: 'Verifies GST and PAN, confirms the tax rate on every line, sets TDS and TCS. Cannot be skipped.' },
+  { value: 'accounts', label: 'Accounts', can: 'First review stage. Verifies GST and PAN, confirms tax on every line, and sets TDS and TCS.' },
+  { value: 'checker', label: 'Checker', can: 'Second review stage, after Accounts. Approves, holds or rejects the note.' },
+  { value: 'verifier', label: 'Verifier', can: 'Third review stage, after the checkers.' },
   { value: 'approver', label: 'Approver', can: 'Final approval. Chairman and Managing Director sit here.' },
   { value: 'admin', label: 'Administrator', can: 'Everything above, plus creating users and resetting passwords.' },
 ];

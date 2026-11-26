@@ -80,7 +80,8 @@ router.post('/notes/:id/tax-verify', requireRole('accounts', 'admin'), wrap(asyn
        VALUES ($1,$2,$3,now(),now())
        ON CONFLICT (note_id) DO UPDATE
          SET all_items_tax_verified = EXCLUDED.all_items_tax_verified,
-             reviewed_by = EXCLUDED.reviewed_by, reviewed_at = now(), updated_at = now()`,
+             reviewed_by = EXCLUDED.reviewed_by, reviewed_at = now(),
+             workflow_reviewed_at = NULL, updated_at = now()`,
       [noteId, outstanding.count === 0, req.user.id],
     );
   });
@@ -198,9 +199,10 @@ router.put('/notes/:id/accounts', requireRole('accounts', 'admin'), wrap(async (
         all_items_tax_verified,
         tds_applicable, tds_section, tds_rate, tds_base, tds_amount, tds_remark,
         tcs_applicable, tcs_section, tcs_rate, tcs_base, tcs_amount, tcs_remark,
-        basic_amount, gst_amount, grand_total, net_payable, remarks, reviewed_by, reviewed_at, updated_at)
+        basic_amount, gst_amount, grand_total, net_payable, remarks, reviewed_by, reviewed_at, updated_at,
+        workflow_reviewed_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-             $25,$26,$27,$28,$29,$30,now(),now())
+             $25,$26,$27,$28,$29,$30,now(),now(),now())
      ON CONFLICT (note_id) DO UPDATE SET
         gst_number_checked = EXCLUDED.gst_number_checked,
         gst_status = EXCLUDED.gst_status,
@@ -232,7 +234,8 @@ router.put('/notes/:id/accounts', requireRole('accounts', 'admin'), wrap(async (
         remarks = EXCLUDED.remarks,
         reviewed_by = EXCLUDED.reviewed_by,
         reviewed_at = now(),
-        updated_at = now()`,
+        updated_at = now(),
+        workflow_reviewed_at = now()`,
     values,
   );
 

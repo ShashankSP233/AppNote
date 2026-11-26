@@ -28,7 +28,7 @@ const TABLES = [
   'app_sessions',
   'vendor_reviews',
   'source_vendors', 'source_requisition_items', 'source_requisitions', 'source_sites', 'source_projects',
-  'audit_log', 'workflow_steps', 'accounts_review', 'payment_milestones',
+  'audit_log', 'workflow_comment_history', 'note_edit_requests', 'workflow_steps', 'accounts_review', 'payment_milestones',
   'note_items', 'comparison_values', 'comparison_criteria', 'quotation_files',
   'quotation_items', 'quotations', 'approval_notes', 'requisition_items',
   'requisitions', 'vendors', 'projects', 'users',

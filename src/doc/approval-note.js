@@ -517,18 +517,31 @@ export function buildPostDeliveryPage(note) {
   return children;
 }
 
-/** Signature strip, four to a row, showing any decision already recorded. */
+function workflowTimestamp(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const datePart = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric',
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).format(date);
+  return `${datePart} ${timePart} IST`;
+}
+
+/** Signature strip, four to a row, with approval timestamps or manual lines. */
 function signatureBlock(note) {
   const children = [];
 
   const stageLabel = {
-    check: 'Checked by', verify: 'Verified by', accounts: 'Accounts', approve: 'Approved by',
+    accounts: 'Accounts verified by', check: 'Checked by', verify: 'Verified by', approve: 'Approved by',
   };
 
   const slots = [{
     role: 'Prepared by',
     name: note.prepared_by_name || note.preparer_name || '',
-    decision: 'approved',
+    decision: note.submitted_at ? 'submitted' : 'pending',
     at: note.submitted_at,
   }];
 
@@ -543,6 +556,7 @@ function signatureBlock(note) {
 
   if (note.steps.length === 0) {
     slots.push(
+      { role: 'Accounts verified by', name: '' },
       { role: 'Checked by', name: '' }, { role: 'Checked by', name: '' },
       { role: 'Verified by', name: '' }, { role: 'Verified by', name: '' },
       { role: 'Approved by', name: 'Managing Director Sir' },
@@ -563,14 +577,16 @@ function signatureBlock(note) {
       ))),
       row(group.map((slot) => {
         if (!slot) return cell('', { width: 25, borders: NO_BORDER });
-        const runs = [text(slot.name || '________________', { size: 9 })];
-        if (slot.decision && slot.decision !== 'pending') {
-          const colour = slot.decision === 'approved' ? COLOURS.GOOD
-            : slot.decision === 'rejected' ? COLOURS.WARN : COLOURS.MUTED;
-          runs.push(text(`\n${slot.decision === 'approved' ? 'Approved' : slot.decision === 'rejected' ? 'Rejected' : 'On hold'}${slot.at ? ` ${formatDate(slot.at, { style: 'short' })}` : ''}`,
-            { size: 7.5, color: colour, break: 1 }));
-        } else if (slot.decision === 'pending') {
-          runs.push(text('\nPending', { size: 7.5, color: COLOURS.MUTED, break: 1 }));
+        const runs = [text(slot.name || 'Name: __________________', { size: 9 })];
+        if (slot.decision === 'approved') {
+          runs.push(text(`\nApproved: ${workflowTimestamp(slot.at)}`, { size: 7.5, color: COLOURS.GOOD, break: 1 }));
+        } else if (slot.decision === 'rejected' || slot.decision === 'on_hold') {
+          const label = slot.decision === 'rejected' ? 'Rejected' : 'On hold';
+          runs.push(text(`\n${label}: ${workflowTimestamp(slot.at)}`, { size: 7.5, color: COLOURS.MUTED, break: 1 }));
+        } else if (slot.decision === 'submitted') {
+          runs.push(text(`\nSubmitted: ${workflowTimestamp(slot.at)}`, { size: 7.5, color: COLOURS.MUTED, break: 1 }));
+        } else {
+          runs.push(text('\nSignature: __________________', { size: 7.5, color: COLOURS.MUTED, break: 1 }));
         }
         return cell([para(runs, { after: 4 })], { width: 25, borders: NO_BORDER, align: ALIGN.LEFT });
       })),
@@ -579,6 +595,42 @@ function signatureBlock(note) {
     children.push(spacer(6));
   }
 
+  return children;
+}
+
+/** Workflow remarks are printed as numbered notes below the signature strip. */
+function workflowCommentsBlock(note) {
+  const stageLabel = {
+    accounts: 'Accounts', check: 'Checkers', verify: 'Verification', approve: 'Approvers',
+  };
+  const workflowComments = note.workflow_comments?.length
+    ? note.workflow_comments
+    : (note.steps || []).filter((step) => String(step.comments || '').trim()).map((step) => ({
+      stage_type: step.step_type,
+      actor_name: step.assignee_name || step.assignee_full_name || 'Reviewer',
+      decision: step.decision,
+      comment: step.comments,
+      created_at: step.decided_at,
+    }));
+  const editComments = (note.edit_requests || []).map((request) => ({
+    stage_type: request.stage_type,
+    actor_name: `${request.requested_by_name} (${request.requested_by_role})`,
+    decision: 'edits requested',
+    comment: request.request_text,
+    created_at: request.requested_at,
+  }));
+  const comments = [...workflowComments, ...editComments]
+    .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+  if (!comments.length) return [];
+
+  const children = [spacer(3), para('Workflow comments', { bold: true, size: 9.5, before: 2, after: 2 })];
+  comments.forEach((step, index) => {
+    const actor = step.actor_name || 'Reviewer';
+    const stamp = workflowTimestamp(step.created_at);
+    const outcome = step.decision ? `, ${step.decision}` : '';
+    const lead = `${index + 1}. ${stageLabel[step.stage_type] || step.stage_type} — ${actor}${outcome}${stamp ? ` (${stamp})` : ''}: `;
+    children.push(para([text(lead, { bold: true, size: 8.5 }), text(String(step.comment).trim(), { size: 8.5 })], { after: 2 }));
+  });
   return children;
 }
 
@@ -594,6 +646,7 @@ export function buildFrontPage(note, { annexureIndex = [] } = {}) {
   // Post-delivery verification is not here: it is filled in weeks later, so it
   // sits on its own page at the back of the document.
   children.push(...signatureBlock(note));
+  children.push(...workflowCommentsBlock(note));
 
   // The enclosure list, naming every annexure by its letter.
   if (annexureIndex.length) {

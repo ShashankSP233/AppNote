@@ -12,9 +12,9 @@ router.use(requireAuth);
 
 // The sequence of stages, and which role owns each one.
 const STAGE_ORDER = [
+  { type: 'accounts', status: 'pending_accounts', role: 'accounts', label: 'Accounts' },
   { type: 'check', status: 'pending_check', role: 'checker', label: 'Checking' },
   { type: 'verify', status: 'pending_verify', role: 'verifier', label: 'Verification' },
-  { type: 'accounts', status: 'pending_accounts', role: 'accounts', label: 'Accounts' },
   { type: 'approve', status: 'pending_approval', role: 'approver', label: 'Approval' },
 ];
 
@@ -26,6 +26,33 @@ async function requireNote(id) {
   const note = await loadNote(Number(id));
   if (!note) throw httpError(404, 'There is no note with that id.');
   return note;
+}
+
+async function invalidateAccountsReview(noteId) {
+  await query(
+    `UPDATE note_items
+        SET tax_verified = FALSE, verified_gst_rate = NULL, verified_by = NULL,
+            verified_at = NULL, tax_remark = NULL
+      WHERE note_id = $1`,
+    [noteId],
+  );
+  await query(
+    `UPDATE accounts_review
+        SET gst_number_checked = FALSE, gst_status = NULL, gst_checked_on = NULL,
+            pan_number_checked = FALSE, pan_status = NULL, pan_checked_on = NULL,
+            msme_checked = FALSE, bank_details_checked = FALSE,
+            duplicate_checked = FALSE, budget_checked = FALSE,
+            all_items_tax_verified = FALSE,
+            tds_applicable = FALSE, tds_section = NULL, tds_rate = NULL,
+            tds_base = NULL, tds_amount = NULL, tds_remark = NULL,
+            tcs_applicable = FALSE, tcs_section = NULL, tcs_rate = NULL,
+            tcs_base = NULL, tcs_amount = NULL, tcs_remark = NULL,
+            basic_amount = NULL, gst_amount = NULL, grand_total = NULL, net_payable = NULL,
+            remarks = NULL, reviewed_by = NULL, reviewed_at = NULL,
+            workflow_reviewed_at = NULL, updated_at = now()
+      WHERE note_id = $1`,
+    [noteId],
+  );
 }
 
 /** A draft can only be edited by its preparer, or by an admin. */
@@ -539,6 +566,43 @@ router.put('/:id/milestones', wrap(async (req, res) => {
 // Workflow
 // ---------------------------------------------------------------------------
 
+router.post('/:id/request-edits', wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const note = await requireNote(id);
+  const allowedRoles = new Set(['checker', 'verifier', 'accounts', 'approver', 'admin']);
+  if (!allowedRoles.has(req.user.role)) {
+    throw httpError(403, 'Only Accounts, checkers, verifiers, approvers or an administrator can request edits.');
+  }
+
+  const requestText = String(req.body?.request_text || '').trim();
+  if (!requestText) throw httpError(400, 'Describe what the preparer needs to change.');
+  if (requestText.length > 4000) throw httpError(400, 'Keep the edit request under 4,000 characters.');
+
+  await tx(async () => {
+    const current = await one('SELECT status, current_stage FROM approval_notes WHERE id = $1 FOR UPDATE', [id]);
+    const stage = STAGE_ORDER.find((item) => item.status === current?.status);
+    if (!stage) throw httpError(409, 'Edits can only be requested while the note is in an approval stage.');
+
+    await query(
+      `INSERT INTO note_edit_requests
+         (note_id, requested_by, requested_by_name, requested_by_role, stage_type, request_text)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, req.user.id, req.user.full_name, req.user.role, stage.type, requestText],
+    );
+    await invalidateAccountsReview(id);
+    await query(
+      `UPDATE approval_notes SET status = 'on_hold', updated_at = now() WHERE id = $1`,
+      [id],
+    );
+  });
+
+  await audit(req, {
+    noteId: id, action: 'edits_requested', entity: 'note', entityId: id,
+    detail: { request_text: requestText },
+  });
+  res.json({ note: await loadNote(id) });
+}));
+
 router.post('/:id/submit', wrap(async (req, res) => {
   const id = Number(req.params.id);
   const note = await requireNote(id);
@@ -552,6 +616,40 @@ router.post('/:id/submit', wrap(async (req, res) => {
 
   if (!note.readiness.canSubmit) {
     throw httpError(422, 'This note is not ready to submit.', { blocking: note.readiness.blocking });
+  }
+
+  if (note.edit_request_pending) {
+    if (!note.steps.length) throw httpError(409, 'The approval assignments are missing. Ask an administrator to restore the workflow.');
+    await tx(async () => {
+      await invalidateAccountsReview(id);
+
+      let order = 1;
+      for (const stage of STAGE_ORDER) {
+        await query('UPDATE workflow_steps SET step_order = $1 WHERE note_id = $2 AND step_type = $3', [order, id, stage.type]);
+        order += 1;
+      }
+      await query(
+        `UPDATE workflow_steps
+            SET decision = 'pending', decided_at = NULL, comments = NULL
+          WHERE note_id = $1`,
+        [id],
+      );
+      await query(
+        `UPDATE note_edit_requests
+            SET status = 'resubmitted', resubmitted_by = $1, resubmitted_at = now()
+          WHERE note_id = $2 AND status = 'pending'`,
+        [req.user.id, id],
+      );
+      await query(
+        `UPDATE approval_notes
+            SET status = $2, current_stage = $3, submitted_at = now(),
+                closed_at = NULL, updated_at = now()
+          WHERE id = $1`,
+        [id, STAGE_ORDER[0].status, STAGE_ORDER[0].type],
+      );
+    });
+    await audit(req, { noteId: id, action: 'note_resubmitted_after_edits', entity: 'note', entityId: id });
+    return res.json({ note: await loadNote(id) });
   }
 
   const assignments = req.body?.assignments ?? {};
@@ -612,10 +710,10 @@ router.post('/:id/submit', wrap(async (req, res) => {
 
     await query(
       `UPDATE approval_notes
-          SET status = 'pending_check', current_stage = 'check',
+          SET status = $2, current_stage = $3,
               submitted_at = now(), updated_at = now()
         WHERE id = $1`,
-      [id],
+      [id, STAGE_ORDER[0].status, STAGE_ORDER[0].type],
     );
   });
 
@@ -661,15 +759,40 @@ router.post('/:id/decision', wrap(async (req, res) => {
   }
 
   await tx(async () => {
+    await query(
+      `INSERT INTO workflow_comment_history
+         (note_id, workflow_step_id, stage_type, actor_name, decision, comment, created_at)
+       SELECT note_id, id, step_type, COALESCE(assignee_name, $2),
+              CASE WHEN decision IN ('approved','rejected','on_hold') THEN decision ELSE 'on_hold' END,
+              comments, COALESCE(decided_at, created_at)
+         FROM workflow_steps old_step
+        WHERE id = $1 AND NULLIF(BTRIM(comments), '') IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_comment_history history
+             WHERE history.note_id = old_step.note_id
+               AND history.workflow_step_id = old_step.id
+               AND history.comment = old_step.comments
+               AND history.created_at = COALESCE(old_step.decided_at, old_step.created_at)
+          )`,
+      [mine.id, req.user.full_name],
+    );
     const updatedStep = await query(
       `UPDATE workflow_steps
           SET decision = $1, comments = $2, decided_at = now(),
               assignee_id = COALESCE(assignee_id, $3),
               assignee_name = COALESCE(assignee_name, $4)
-        WHERE id = $5 AND decision = 'pending' RETURNING id`,
+        WHERE id = $5 AND decision = 'pending' RETURNING id, decided_at`,
       [decision, comments, req.user.id, req.user.full_name, mine.id],
     );
     if (!updatedStep.rowCount) throw httpError(409, 'Someone has already acted on this step. Refresh the note to see its current status.');
+    if (comments) {
+      await query(
+        `INSERT INTO workflow_comment_history
+           (note_id, workflow_step_id, stage_type, actor_name, decision, comment, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, mine.id, stage.type, req.user.full_name, decision, comments, updatedStep.rows[0].decided_at],
+      );
+    }
 
     if (decision === 'rejected') {
       await query(
@@ -695,8 +818,24 @@ router.post('/:id/decision', wrap(async (req, res) => {
 
     if (stillPending.count > 0) return;
 
-    const index = STAGE_ORDER.findIndex((s) => s.type === stage.type);
-    const next = STAGE_ORDER[index + 1];
+    // Follow the order saved on this note. New submissions use the updated
+    // Accounts → Checkers → Verification → Approvers flow; notes already in
+    // progress retain their original saved sequence.
+    const nextStep = await one(
+      `SELECT step_type
+         FROM workflow_steps
+        WHERE note_id = $1
+          AND step_order > (
+            SELECT COALESCE(MAX(step_order), 0)
+              FROM workflow_steps
+             WHERE note_id = $1 AND step_type = $2
+          )
+        GROUP BY step_type
+        ORDER BY MIN(step_order), MIN(id)
+        LIMIT 1`,
+      [id, stage.type],
+    );
+    const next = nextStep ? stageFor(nextStep.step_type) : null;
 
     if (next) {
       await query(
@@ -731,6 +870,10 @@ router.post('/:id/resume', wrap(async (req, res) => {
   const id = Number(req.params.id);
   const note = await requireNote(id);
 
+  if (note.edit_request_pending) {
+    throw httpError(409, 'This note has requested edits. Update it and use “Resubmit for all approvals”.');
+  }
+
   if (!['on_hold', 'rejected'].includes(note.status)) {
     throw httpError(409, 'Only a held or rejected note can be resumed.');
   }
@@ -744,9 +887,8 @@ router.post('/:id/resume', wrap(async (req, res) => {
   }
 
   // Reopen the earliest stage that has not been fully approved.
-  const firstOpen = STAGE_ORDER.find((stage) => note.steps
-    .filter((s) => s.step_type === stage.type)
-    .some((s) => s.decision !== 'approved')) || STAGE_ORDER[0];
+  const firstOpenType = note.steps.find((step) => step.decision !== 'approved')?.step_type;
+  const firstOpen = stageFor(firstOpenType) || STAGE_ORDER[0];
 
   await tx(async () => {
     await query(

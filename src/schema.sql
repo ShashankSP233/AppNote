@@ -459,6 +459,10 @@ CREATE TABLE IF NOT EXISTS accounts_review (
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- The Accounts form must be saved during the current approval round, after
+-- any preparer changes, before the Accounts workflow step can be approved.
+ALTER TABLE accounts_review ADD COLUMN IF NOT EXISTS workflow_reviewed_at TIMESTAMPTZ;
+
 -- ---------------------------------------------------------------------------
 -- Workflow and audit
 -- ---------------------------------------------------------------------------
@@ -479,6 +483,55 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
 CREATE INDEX IF NOT EXISTS idx_steps_note ON workflow_steps(note_id, step_order);
 CREATE INDEX IF NOT EXISTS idx_steps_assignee ON workflow_steps(assignee_id)
   WHERE decision = 'pending';
+
+-- Edit requests return a submitted note to its preparer without losing who
+-- asked for changes or the workflow comments from earlier approval rounds.
+CREATE TABLE IF NOT EXISTS note_edit_requests (
+  id                SERIAL PRIMARY KEY,
+  note_id           INTEGER NOT NULL REFERENCES approval_notes(id) ON DELETE CASCADE,
+  requested_by      INTEGER REFERENCES users(id),
+  requested_by_name TEXT NOT NULL,
+  requested_by_role TEXT NOT NULL,
+  stage_type        TEXT NOT NULL CHECK (stage_type IN ('accounts','check','verify','approve')),
+  request_text      TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','resubmitted')),
+  requested_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resubmitted_by    INTEGER REFERENCES users(id),
+  resubmitted_at    TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_pending_edit_request
+  ON note_edit_requests(note_id) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS workflow_comment_history (
+  id                BIGSERIAL PRIMARY KEY,
+  note_id           INTEGER NOT NULL REFERENCES approval_notes(id) ON DELETE CASCADE,
+  workflow_step_id  INTEGER REFERENCES workflow_steps(id) ON DELETE SET NULL,
+  stage_type        TEXT NOT NULL CHECK (stage_type IN ('accounts','check','verify','approve')),
+  actor_name        TEXT NOT NULL,
+  decision          TEXT NOT NULL CHECK (decision IN ('approved','rejected','on_hold')),
+  comment           TEXT NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_comment_history_note
+  ON workflow_comment_history(note_id, created_at, id);
+
+-- Preserve comments already recorded before this history table was added.
+INSERT INTO workflow_comment_history
+  (note_id, workflow_step_id, stage_type, actor_name, decision, comment, created_at)
+SELECT w.note_id, w.id, w.step_type, COALESCE(w.assignee_name, 'Reviewer'),
+       CASE WHEN w.decision IN ('approved','rejected','on_hold') THEN w.decision ELSE 'on_hold' END,
+       w.comments, COALESCE(w.decided_at, w.created_at)
+  FROM workflow_steps w
+ WHERE NULLIF(BTRIM(w.comments), '') IS NOT NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM workflow_comment_history h
+      WHERE h.note_id = w.note_id
+        AND h.workflow_step_id = w.id
+        AND h.comment = w.comments
+        AND h.created_at = COALESCE(w.decided_at, w.created_at)
+   );
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id              BIGSERIAL PRIMARY KEY,
