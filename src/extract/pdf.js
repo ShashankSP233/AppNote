@@ -80,15 +80,20 @@ export function itemsToLines(items, { yTolerance = 3, columnGap = 4 } = {}) {
  * Returns { text, pageCount, likelyScanned, perPage }.
  */
 /**
- * pdf.js checks the constructor, and a Node Buffer — though it is a Uint8Array
- * subclass — is rejected. This always hands over a plain Uint8Array view.
+ * pdf.js may transfer (and detach) the ArrayBuffer passed to getDocument.
+ * Always give it an owned copy so the uploaded Buffer remains available for a
+ * second read, such as rendering a scanned PDF for OCR.
  */
 function toUint8(buffer) {
-  if (Buffer.isBuffer(buffer)) {
-    return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  if (buffer instanceof ArrayBuffer) {
+    return new Uint8Array(buffer.slice(0));
   }
-  if (buffer instanceof Uint8Array) return buffer;
-  return new Uint8Array(buffer);
+  if (ArrayBuffer.isView(buffer)) {
+    const bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    return new Uint8Array(bytes);
+  }
+  if (Array.isArray(buffer)) return Uint8Array.from(buffer);
+  throw new TypeError('PDF input must be an ArrayBuffer or byte array.');
 }
 
 export async function extractPdfText(buffer, { maxPages = 20 } = {}) {

@@ -4,15 +4,22 @@
 // returns the same shape. Nothing goes straight into a comparison:
 // the result lands in the review screen with its confidence and its warnings,
 // and a person confirms it before the note can be submitted.
+//
+// Mode "ai" tries the separately hosted AI reader first (see ai-reader.js).
+// If it is unavailable, times out or returns something unusable, extraction
+// falls back to the chain above (or to manual entry, per
+// EXTRACTION_SERVICE_FALLBACK). The review gate applies in every case.
 
 import path from 'node:path';
 import { parseQuotationPython } from './python.js';
 import { extractPdfText, renderPdfPages } from './pdf.js';
 import * as ocr from './ocr.js';
+import { readWithAiService } from './ai-reader.js';
+import { readConfig as readAiConfig } from './ai-service.js';
 
 export const CONFIDENCE_FLOOR = Number(process.env.EXTRACTION_CONFIDENCE_FLOOR || 45);
 
-/** auto | text | ocr | off */
+/** auto | text | ocr | ai | off */
 export const EXTRACTION_MODE = (process.env.EXTRACTION_MODE || 'off').toLowerCase();
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/bmp', 'image/tiff']);
@@ -50,6 +57,22 @@ export async function extractFromFiles(files, { mode = EXTRACTION_MODE } = {}) {
   }
   if (!files || !files.length) {
     return emptyResult('No file was attached, so there is nothing to read.');
+  }
+
+  // --- Hosted AI reader, with fallback --------------------------------------
+  if (mode === 'ai') {
+    const outcome = await readWithAiService(files, { confidenceFloor: CONFIDENCE_FLOOR });
+    if (outcome.result) return outcome.result;
+
+    // Only the failure code is logged: never document content or the key.
+    console.warn(`[extract] AI reader not used (${outcome.code}).`);
+    const reason = `The AI reader could not be used: ${outcome.failure}`;
+    if (readAiConfig().fallback === 'manual') {
+      return emptyResult(`${reason} Enter the figures from the attached copy.`);
+    }
+    const local = await extractFromFiles(files, { mode: 'auto' });
+    local.warnings = [`${reason} The built-in reader was used instead.`, ...(local.warnings || [])];
+    return local;
   }
 
   const attempts = [];
